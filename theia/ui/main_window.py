@@ -1,0 +1,510 @@
+"""The main window: top bar, browsing pages and the player, wired together."""
+
+from __future__ import annotations
+
+import os
+
+from PyQt6.QtCore import QByteArray, QPoint, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QDesktopServices, QKeySequence, QPainter, QShortcut
+from PyQt6.QtWidgets import (
+    QButtonGroup,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .. import __version__
+from ..config import APP_NAME
+from ..library import Library
+from ..models import Media, ScanSummary, Show, format_clock
+from . import icons, theme
+from .dialogs import FoldersDialog
+from .images import ImageLoader
+from .pages import GridPage, HomePage, SearchPage, ShowPage
+from .player import PlayerPage
+from .services import ScanWorker, ThumbnailService
+from .widgets import CardModel, MediaCard, movie_card, show_card
+
+
+class ElidedLabel(QLabel):
+    """A right-aligned label that shortens its text to whatever width it is given."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def setText(self, text: str) -> None:
+        super().setText(text)
+        self.setToolTip(text)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideMiddle, self.width())
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, text)
+        painter.end()
+
+
+class TopBar(QWidget):
+    """Logo, section tabs, search box and library actions."""
+
+    navigate = pyqtSignal(str)  # "home" | "shows" | "movies"
+    searchChanged = pyqtSignal(str)
+    rescanRequested = pyqtSignal()
+    foldersRequested = pyqtSignal()
+    menuRequested = pyqtSignal(QPoint)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("topBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(theme.TOPBAR_HEIGHT)
+
+        logo = QLabel("THEIA")
+        logo.setObjectName("logo")
+
+        self._tabs = QButtonGroup(self)
+        self._tabs.setExclusive(True)
+        self._buttons: dict[str, QPushButton] = {}
+        tabs = QHBoxLayout()
+        tabs.setSpacing(4)
+        for key, text in (("home", "Home"), ("shows", "TV Shows"), ("movies", "Movies")):
+            button = QPushButton(text)
+            button.setObjectName("navButton")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            button.clicked.connect(lambda _checked=False, k=key: self.navigate.emit(k))
+            self._tabs.addButton(button)
+            self._buttons[key] = button
+            tabs.addWidget(button)
+
+        self.status = ElidedLabel()
+        self.status.setObjectName("statusLabel")
+
+        self.search = QLineEdit()
+        self.search.setObjectName("searchBox")
+        self.search.setPlaceholderText("Search titles")
+        self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(140)  # gives way first when the window gets narrow
+        self.search.setMaximumWidth(250)
+        self.search.addAction(icons.icon("search", theme.TEXT_DIM), QLineEdit.ActionPosition.LeadingPosition)
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(160)
+        self._debounce.timeout.connect(lambda: self.searchChanged.emit(self.search.text()))
+        self.search.textChanged.connect(lambda _text: self._debounce.start())
+
+        self.rescan = QPushButton("Rescan Library")
+        self.rescan.setIcon(icons.icon("refresh"))
+        self.rescan.setIconSize(QSize(18, 18))
+        self.rescan.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.rescan.setToolTip("Look for new, moved and deleted videos (F5)")
+        self.rescan.clicked.connect(self.rescanRequested)
+
+        folders = QToolButton()
+        folders.setIcon(icons.icon("folder"))
+        folders.setIconSize(QSize(22, 22))
+        folders.setToolTip("Library folders")
+        folders.setCursor(Qt.CursorShape.PointingHandCursor)
+        folders.clicked.connect(self.foldersRequested)
+
+        self._more = QToolButton()
+        self._more.setIcon(icons.icon("more"))
+        self._more.setIconSize(QSize(22, 22))
+        self._more.setToolTip("More")
+        self._more.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._more.clicked.connect(
+            lambda: self.menuRequested.emit(self._more.mapToGlobal(QPoint(0, self._more.height() + 4)))
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(theme.SIDE_MARGIN, 0, theme.SIDE_MARGIN - 8, 0)
+        layout.setSpacing(12)
+        layout.addWidget(logo)
+        layout.addSpacing(22)
+        layout.addLayout(tabs)
+        layout.addStretch(1)
+        layout.addWidget(self.status, 2)
+        layout.addWidget(self.search, 6)
+        layout.addWidget(self.rescan)
+        layout.addWidget(folders)
+        layout.addWidget(self._more)
+
+    def set_active(self, key: str | None) -> None:
+        """Highlight a tab, or none when a detail or search page is showing."""
+        self._tabs.setExclusive(False)
+        for name, button in self._buttons.items():
+            button.setChecked(name == key)
+        self._tabs.setExclusive(True)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, library: Library) -> None:
+        super().__init__()
+        self.library = library
+        self.images = ImageLoader(self)
+        self.thumbs = ThumbnailService(library, self)
+        self._scan: ScanWorker | None = None
+        self._closing = False
+        self._scan_was_manual = False
+        self._rescan_queued = False
+        self._return_to: QWidget | None = None
+        self._before_search: QWidget | None = None
+
+        self.setWindowTitle(APP_NAME)
+        self.setMinimumSize(900, 560)
+
+        self.top_bar = TopBar()
+        self.home = HomePage(self)
+        self.shows_page = GridPage(
+            self, "TV Shows", lambda: [show_card(s) for s in library.shows()], "No TV shows in your library yet."
+        )
+        self.movies_page = GridPage(
+            self, "Movies", lambda: [movie_card(m) for m in library.movies()], "No movies in your library yet."
+        )
+        self.search_page = SearchPage(self)
+        self.show_page = ShowPage(self)
+        self.pages = QStackedWidget()
+        for page in (self.home, self.shows_page, self.movies_page, self.search_page, self.show_page):
+            self.pages.addWidget(page)
+        self._tabs = {"home": self.home, "shows": self.shows_page, "movies": self.movies_page}
+
+        self.browser = QWidget()
+        self.browser.setObjectName("browser")
+        column = QVBoxLayout(self.browser)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        column.addWidget(self.top_bar)
+        column.addWidget(self.pages, 1)
+
+        self.player = PlayerPage(library)
+        self.player.closed.connect(self._player_closed)
+        self.root = QStackedWidget()
+        self.root.addWidget(self.browser)
+        self.root.addWidget(self.player)
+        self.setCentralWidget(self.root)
+
+        self.top_bar.navigate.connect(self.show_tab)
+        self.top_bar.searchChanged.connect(self._search)
+        self.top_bar.rescanRequested.connect(lambda: self.rescan(manual=True))
+        self.top_bar.foldersRequested.connect(self.manage_folders)
+        self.top_bar.menuRequested.connect(self._show_more_menu)
+        self.thumbs.backdropReady.connect(self.show_page.on_backdrop)
+
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(lambda: self.top_bar.status.setText(""))
+        self._install_shortcuts()
+        self._restore_geometry()
+
+        self.reload()
+        self.show_tab("home")
+        # Catch up with whatever changed on disk since the last run.
+        self._startup_scan = QTimer(self)
+        self._startup_scan.setSingleShot(True)
+        self._startup_scan.timeout.connect(self.rescan)
+        self._startup_scan.start(250)
+
+    # ---------------------------------------------------------- navigation
+
+    def _install_shortcuts(self) -> None:
+        def bind(sequence, handler) -> None:
+            shortcut = QShortcut(QKeySequence(sequence), self.browser)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)  # not while the player has focus
+            shortcut.activated.connect(handler)
+
+        bind("Ctrl+F", self._focus_search)
+        bind("/", self._focus_search)
+        bind("F5", lambda: self.rescan(manual=True))
+        bind("Ctrl+R", lambda: self.rescan(manual=True))
+        bind("Escape", self._escape)
+        bind("Alt+Left", self.go_back)
+        bind("F11", lambda: self.showNormal() if self.isFullScreen() else self.showFullScreen())
+        bind("Ctrl+Q", self.close)
+
+    def _focus_search(self) -> None:
+        self.top_bar.search.setFocus()
+        self.top_bar.search.selectAll()
+
+    def _escape(self) -> None:
+        if self.top_bar.search.text():
+            self.top_bar.search.clear()
+        elif self.pages.currentWidget() is self.show_page:
+            self.go_back()
+        elif self.isFullScreen():
+            self.showNormal()
+
+    def show_tab(self, key: str) -> None:
+        self._before_search = None
+        self.pages.setCurrentWidget(self._tabs[key])
+        self.top_bar.set_active(key)
+        # Leaving a search: empty the box (its change signal is a no-op off the search page).
+        self.top_bar.search.clear()
+
+    def _current_tab(self) -> str | None:
+        for key, page in self._tabs.items():
+            if self.pages.currentWidget() is page:
+                return key
+        return None
+
+    def open_show(self, show: Show) -> None:
+        current = self.pages.currentWidget()
+        if current is not self.show_page:
+            self._return_to = current
+        if self.show_page.open(show.id):
+            self.pages.setCurrentWidget(self.show_page)
+            self.top_bar.set_active(None)
+
+    def go_back(self) -> None:
+        """Leave the show detail page for wherever the viewer came from."""
+        if self.pages.currentWidget() is not self.show_page:
+            return
+        target = self._return_to or self.home
+        if target is self.search_page and not self.top_bar.search.text().strip():
+            target = self._before_search or self.home  # the search was cleared meanwhile
+        if target is self.show_page:
+            target = self.home
+        if target is self.search_page:
+            self.search_page.reload()  # progress may have changed while away
+        self.pages.setCurrentWidget(target)
+        self.top_bar.set_active(self._current_tab())
+
+    def _search(self, text: str) -> None:
+        text = text.strip()
+        current = self.pages.currentWidget()
+        if text:
+            if current is not self.search_page:
+                self._before_search = current
+            self.search_page.search(text)
+            self.pages.setCurrentWidget(self.search_page)
+            self.top_bar.set_active(None)
+        elif current is self.search_page:
+            self.pages.setCurrentWidget(self._before_search or self.home)
+            self.top_bar.set_active(self._current_tab())
+
+    # --------------------------------------------------------------- cards
+
+    def make_card(self, model: CardModel) -> MediaCard:
+        """Build a card and connect it to playback, menus and thumbnail updates."""
+        card = MediaCard(model, self.images)
+        card.activated.connect(self.activate)
+        card.menuRequested.connect(self.show_menu)
+        if model.thumb_media_id is not None and not model.image:
+            self.thumbs.thumbnailReady.connect(card.on_thumbnail)
+        return card
+
+    def activate(self, payload) -> None:
+        if isinstance(payload, Show):
+            self.open_show(payload)
+        elif isinstance(payload, Media):
+            self.play(payload)
+
+    def show_menu(self, payload, position: QPoint) -> None:
+        menu = QMenu(self)
+        folder = None
+        if isinstance(payload, Show):
+            menu.addAction("Open").triggered.connect(lambda: self.open_show(payload))
+            upcoming = self.library.next_up(payload.id)
+            if upcoming is not None:
+                menu.addAction(upcoming.label).triggered.connect(
+                    lambda: self.play(upcoming.episode, upcoming.action != "resume")
+                )
+            folder = payload.path
+        else:
+            media = self.library.media(payload.id) or payload
+            if media.in_progress:
+                menu.addAction(f"Resume from {format_clock(media.position)}").triggered.connect(lambda: self.play(media))
+                menu.addAction("Start Over").triggered.connect(lambda: self.play(media, True))
+            else:
+                menu.addAction("Play").triggered.connect(lambda: self.play(media, True))
+            if media.is_episode and media.show_id is not None:
+                show = self.library.show(media.show_id)
+                if show is not None:
+                    menu.addAction("Go to Show").triggered.connect(lambda: self.open_show(show))
+            menu.addSeparator()
+            if not media.is_finished:
+                menu.addAction("Mark as Watched").triggered.connect(lambda: self._set_watched(media, True))
+            if media.position > 0:
+                menu.addAction("Mark as Unwatched").triggered.connect(lambda: self._set_watched(media, False))
+            folder = os.path.dirname(media.path)
+        if folder and os.path.isdir(folder):
+            menu.addSeparator()
+            menu.addAction("Open Containing Folder").triggered.connect(
+                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+            )
+        menu.exec(position)
+
+    def _set_watched(self, media: Media, watched: bool) -> None:
+        if watched:
+            self.library.mark_watched(media.id)
+        else:
+            self.library.clear_progress(media.id)
+        self.reload()
+
+    # ------------------------------------------------------------ playback
+
+    def play(self, media: Media, from_start: bool = False) -> None:
+        fresh = self.library.media(media.id) or media  # the saved position may have moved on
+        if not os.path.isfile(fresh.path):
+            self.player.play(fresh, from_start)  # explains that the file is unavailable
+            return
+        self.root.setCurrentWidget(self.player)
+        if self.player.play(fresh, from_start):
+            self.thumbs.pause()  # keep ffmpeg from competing with playback
+        else:
+            self.root.setCurrentWidget(self.browser)
+
+    def _player_closed(self) -> None:
+        self.root.setCurrentWidget(self.browser)
+        self.thumbs.resume()
+        self.reload(after_playback=True)
+
+    # ------------------------------------------------------------- library
+
+    def reload(self, after_playback: bool = False) -> None:
+        """Re-read the library into every page."""
+        self.home.reload()
+        self.shows_page.reload()
+        self.movies_page.reload()
+        if self.pages.currentWidget() is self.search_page:
+            self.search_page.reload()
+        if self.show_page.show_id is not None and not self.show_page.reload(follow_next=after_playback):
+            if self.pages.currentWidget() is self.show_page:  # the show was removed from disk
+                self.pages.setCurrentWidget(self.home)
+                self.top_bar.set_active("home")
+
+    def rescan(self, manual: bool = False) -> None:
+        if self._closing:
+            return
+        if self._scan is not None:
+            self._rescan_queued = self._rescan_queued or manual
+            return
+        self._scan = ScanWorker(self.library, retry_failed=manual, parent=self)
+        self._scan_was_manual = manual
+        self._scan.progress.connect(self._set_status)
+        self._scan.finishedScan.connect(self._scan_finished)
+        self._scan.failed.connect(lambda message: self._scan_finished(None, message))
+        self._scan.finished.connect(self._scan_thread_done)
+        self.top_bar.rescan.setEnabled(False)
+        self.top_bar.rescan.setText("Scanning…")
+        self._scan.start()
+        self.home.refresh_empty_state()
+
+    @property
+    def is_scanning(self) -> bool:
+        return self._scan is not None
+
+    def _set_status(self, text: str, linger_ms: int = 0) -> None:
+        self._status_timer.stop()
+        self.top_bar.status.setText(text)
+        if linger_ms:
+            self._status_timer.start(linger_ms)
+
+    def _scan_finished(self, summary: ScanSummary | None, error: str = "") -> None:
+        if summary is None:
+            self._set_status(f"Scan failed: {error}", 12000)
+            return
+        if summary.cancelled:
+            return
+        if summary.changed:
+            self.reload()
+        queued = self.thumbs.queue_missing()
+        changes = []
+        if summary.added:
+            changes.append(f"{summary.added} new")
+        if summary.removed:
+            changes.append(f"{summary.removed} removed")
+        if summary.moved:
+            changes.append(f"{summary.moved} moved")
+        text = ", ".join(changes) if changes else "Library up to date"
+        if queued:
+            text += f"  ·  creating {queued} thumbnails"
+        if summary.missing_roots:
+            text += f"  ·  {len(summary.missing_roots)} folder(s) unavailable"
+        quiet = not (self._scan_was_manual or summary.changed or queued or summary.missing_roots)
+        self._set_status("" if quiet else text, 9000)  # the start-up check says nothing if all is as it was
+
+    def _scan_thread_done(self) -> None:
+        worker, self._scan = self._scan, None
+        if worker is not None:
+            worker.deleteLater()
+        self.top_bar.rescan.setEnabled(True)
+        self.top_bar.rescan.setText("Rescan Library")
+        self.home.refresh_empty_state()
+        if self._rescan_queued:
+            self._rescan_queued = False
+            self.rescan(manual=True)
+
+    def manage_folders(self) -> None:
+        dialog = FoldersDialog(self.library, self)
+        dialog.exec()
+        if dialog.changed:
+            self.reload()
+            self.rescan(manual=True)
+
+    def _show_more_menu(self, position: QPoint) -> None:
+        menu = QMenu(self)
+        menu.addAction("Library Folders…").triggered.connect(self.manage_folders)
+        menu.addAction("Rescan Library").triggered.connect(lambda: self.rescan(manual=True))
+        menu.addSeparator()
+        hardware = QAction("Hardware Video Decoding", menu, checkable=True)
+        hardware.setChecked(self.library.flag("hardware_decoding", True))
+        hardware.setToolTip("Turn off if video shows green or garbled frames")
+        hardware.toggled.connect(lambda on: self.library.set_flag("hardware_decoding", on))
+        menu.addAction(hardware)
+        menu.setToolTipsVisible(True)
+        menu.addSeparator()
+        menu.addAction(f"About {APP_NAME}").triggered.connect(self._about)
+        menu.exec(position)
+
+    def _about(self) -> None:
+        counts = self.library.counts()
+        QMessageBox.about(
+            self, f"About {APP_NAME}",
+            f"<h3>{APP_NAME} {__version__}</h3>"
+            "<p>An offline media center for your own movies and TV shows.</p>"
+            f"<p>{counts.get('movie', 0)} movies · {counts.get('show', 0)} shows · "
+            f"{counts.get('episode', 0)} episodes · {counts.get('other', 0)} other videos</p>"
+            f"<p>Library data: <code>{self.library.paths.data_dir}</code></p>"
+            "<p>Built with PyQt6, libVLC, FFmpeg and guessit.</p>",
+        )
+
+    # -------------------------------------------------------------- window
+
+    def bring_to_front(self) -> None:
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _restore_geometry(self) -> None:
+        saved = self.library.setting("window_geometry")
+        if saved and self.restoreGeometry(QByteArray.fromBase64(saved.encode())):
+            return
+        screen = self.screen().availableGeometry()
+        self.resize(min(1360, round(screen.width() * 0.9)), min(860, round(screen.height() * 0.9)))
+
+    def closeEvent(self, event) -> None:
+        self._closing = True  # no new background work from here on
+        self._startup_scan.stop()
+        if self.player.is_active:
+            self.player.close_player()  # saves the position and leaves fullscreen
+        self.player.shutdown()
+        self.library.set_setting("window_geometry", bytes(self.saveGeometry().toBase64()).decode())
+        if self._scan is not None:
+            self._scan.requestInterruption()
+            self._scan.wait(5000)
+        self.thumbs.stop()
+        self.images.shutdown()
+        super().closeEvent(event)

@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+# written by run.sh
+assets/theia.svg
+
+# Virtual environment & Python artifacts
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local user/app data
+theia.db
+thumbnails/
+.cache/
