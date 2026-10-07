@@ -299,6 +299,12 @@ class Library:
     def movies(self) -> list[Media]:
         return self._media("WHERE m.kind = 'movie'", order="ORDER BY m.sort_title, m.year")
 
+    def subtitle_candidates(self) -> list[Media]:
+        """Every movie and TV episode, in a stable order, for the subtitle downloader."""
+        return self._media(
+            "WHERE m.kind IN ('movie', 'episode')", order="ORDER BY s.title, m.season, m.episode, m.sort_title"
+        )
+
     def others(self) -> list[Media]:
         return self._media("WHERE m.kind = 'other'", order="ORDER BY m.sort_title")
 
@@ -350,9 +356,20 @@ class Library:
         return sorted((r["season"] for r in rows), key=lambda s: (s <= 0, -s if s <= 0 else s))
 
     def continue_watching(self, limit: int = 40) -> list[Media]:
-        """Partially watched movies and episodes, most recently watched first."""
+        """Partially watched movies and episodes, most recently watched first.
+
+        A show appears once, as its most recently watched unfinished episode, so
+        switching episodes moves the show's card along instead of adding another.
+        """
         started = self._media("WHERE p.position_seconds > 0", order="ORDER BY p.last_watched DESC")
-        return [m for m in started if m.in_progress][:limit]
+        listed, shows = [], set()
+        for media in started:
+            if not media.in_progress or media.show_id in shows:
+                continue
+            if media.show_id is not None:
+                shows.add(media.show_id)
+            listed.append(media)
+        return listed[:limit]
 
     def search(self, text: str, episode_limit: int = 60) -> dict[str, list]:
         """Case-insensitive match of every word in *text* against titles."""

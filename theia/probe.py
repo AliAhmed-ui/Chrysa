@@ -87,3 +87,18 @@ def _number(value) -> float:
     except (TypeError, ValueError):
         return 0.0
     return number if number > 0 else 0.0
+
+
+def has_embedded_subtitles(path: str, timeout: float = 30.0) -> bool:
+    """True when the container carries at least one subtitle stream. Never raises."""
+    ffprobe = find_tool("ffprobe")
+    if not ffprobe:
+        return False
+    command = [ffprobe, "-v", "error", "-select_streams", "s", "-show_entries", "stream=index", "-of", "csv=p=0", path]
+    try:
+        done = subprocess.run(
+            command, capture_output=True, timeout=timeout, check=False, stdin=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(done.stdout.strip())

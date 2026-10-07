@@ -1,19 +1,22 @@
-"""The main window: top bar, browsing pages and the player, wired together."""
+"""The main window: sidebar, browsing pages and the player, wired together."""
 
 from __future__ import annotations
 
 import os
+import time
 
 from PyQt6.QtCore import QByteArray, QPoint, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QDesktopServices, QKeySequence, QPainter, QShortcut
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -23,7 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .. import __version__
-from ..config import APP_NAME
+from ..config import APP_NAME, default_media_dir
 from ..library import Library
 from ..models import Media, ScanSummary, Show, format_clock
 from . import icons, theme
@@ -31,12 +34,12 @@ from .dialogs import FoldersDialog
 from .images import ImageLoader
 from .pages import GridPage, HomePage, SearchPage, ShowPage
 from .player import PlayerPage
-from .services import ScanWorker, ThumbnailService
-from .widgets import CardModel, MediaCard, movie_card, show_card
+from .services import ScanWorker, SubtitleWorker, ThumbnailService
+from .widgets import BrandLabel, CardModel, MediaCard, movie_card, show_card
 
 
 class ElidedLabel(QLabel):
-    """A right-aligned label that shortens its text to whatever width it is given."""
+    """A label that shortens its text to whatever width it is given."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -49,99 +52,159 @@ class ElidedLabel(QLabel):
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setPen(self.palette().color(self.foregroundRole()))
-        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideMiddle, self.width())
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, text)
+        area = self.contentsRect()
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, area.width())
+        painter.drawText(area, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
         painter.end()
 
 
-class TopBar(QWidget):
-    """Logo, section tabs, search box and library actions."""
+class NavButton(QPushButton):
+    """A sidebar row: accent-coloured icon, label and (optionally) a count on the right."""
 
-    navigate = pyqtSignal(str)  # "home" | "shows" | "movies"
-    searchChanged = pyqtSignal(str)
-    rescanRequested = pyqtSignal()
-    foldersRequested = pyqtSignal()
-    menuRequested = pyqtSignal(QPoint)
+    def __init__(self, icon_name: str, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("navButton")
+        self.setCheckable(True)
+        self.setIcon(icons.icon(icon_name, theme.ACCENT))
+        self.setIconSize(QSize(18, 18))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setFixedHeight(38)
+        self._count = QLabel(self)
+        self._count.setObjectName("navCount")
+        self._count.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set_count(self, count: int | None) -> None:
+        self._count.setText("" if count is None else str(count))
+        self._count.setVisible(count is not None)
+        self._count.adjustSize()
+        self._place_count()
+
+    def _place_count(self) -> None:
+        self._count.move(self.width() - self._count.width() - 12, (self.height() - self._count.height()) // 2)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._place_count()
+
+
+class ActivityLog(QPlainTextEdit):
+    """A compact read-only mini-terminal for background work (subtitle search, scans)."""
+
+    MAX_LINES = 500
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("topBar")
+        self.setObjectName("activityLog")
+        self.setReadOnly(True)
+        self.setFixedHeight(140)
+        self.setMaximumBlockCount(self.MAX_LINES)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setPlaceholderText("Activity log")
+        self.setStyleSheet(
+            "QPlainTextEdit#activityLog { background: #0E0F12; "
+            "border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; "
+            "font-family: monospace; font-size: 11px; color: #86868B; padding: 6px; }"
+        )
+
+    def log(self, level: str, message: str) -> None:
+        self.appendPlainText(f"{time.strftime('%H:%M:%S')} [{level}] {message}")
+        bar = self.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+
+class Sidebar(QWidget):
+    """Wordmark, search, section navigation and library actions (the macOS source-list pattern)."""
+
+    navigate = pyqtSignal(str)  # "home" | "movies" | "shows"
+    searchChanged = pyqtSignal(str)
+    rescanRequested = pyqtSignal()
+    subtitlesRequested = pyqtSignal()
+    addFolderRequested = pyqtSignal()
+    menuRequested = pyqtSignal(QPoint)
+
+    SECTIONS = (
+        ("home", "library", "Library"),
+        ("movies", "film", "Movies"),
+        ("shows", "tv", "TV Shows"),
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("sidebar")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedHeight(theme.TOPBAR_HEIGHT)
-
-        logo = QLabel("THEIA")
-        logo.setObjectName("logo")
-
-        self._tabs = QButtonGroup(self)
-        self._tabs.setExclusive(True)
-        self._buttons: dict[str, QPushButton] = {}
-        tabs = QHBoxLayout()
-        tabs.setSpacing(4)
-        for key, text in (("home", "Home"), ("shows", "TV Shows"), ("movies", "Movies")):
-            button = QPushButton(text)
-            button.setObjectName("navButton")
-            button.setCheckable(True)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            button.clicked.connect(lambda _checked=False, k=key: self.navigate.emit(k))
-            self._tabs.addButton(button)
-            self._buttons[key] = button
-            tabs.addWidget(button)
-
-        self.status = ElidedLabel()
-        self.status.setObjectName("statusLabel")
+        self.setFixedWidth(theme.SIDEBAR_WIDTH)
 
         self.search = QLineEdit()
         self.search.setObjectName("searchBox")
-        self.search.setPlaceholderText("Search titles")
+        self.search.setPlaceholderText("Search")
         self.search.setClearButtonEnabled(True)
-        self.search.setMinimumWidth(140)  # gives way first when the window gets narrow
-        self.search.setMaximumWidth(250)
-        self.search.addAction(icons.icon("search", theme.TEXT_DIM), QLineEdit.ActionPosition.LeadingPosition)
+        self.search.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # no focus ring on launch; "/" and Ctrl+F still jump here
+        self.search.addAction(icons.icon("search", theme.TEXT_MUTED), QLineEdit.ActionPosition.LeadingPosition)
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(160)
         self._debounce.timeout.connect(lambda: self.searchChanged.emit(self.search.text()))
         self.search.textChanged.connect(lambda _text: self._debounce.start())
 
-        self.rescan = QPushButton("Rescan Library")
-        self.rescan.setIcon(icons.icon("refresh"))
-        self.rescan.setIconSize(QSize(18, 18))
-        self.rescan.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.rescan.setToolTip("Look for new, moved and deleted videos (F5)")
-        self.rescan.clicked.connect(self.rescanRequested)
+        self._tabs = QButtonGroup(self)
+        self._tabs.setExclusive(True)
+        self._buttons: dict[str, NavButton] = {}
 
-        folders = QToolButton()
-        folders.setIcon(icons.icon("folder"))
-        folders.setIconSize(QSize(22, 22))
-        folders.setToolTip("Library folders")
-        folders.setCursor(Qt.CursorShape.PointingHandCursor)
-        folders.clicked.connect(self.foldersRequested)
-
-        self._more = QToolButton()
-        self._more.setIcon(icons.icon("more"))
-        self._more.setIconSize(QSize(22, 22))
-        self._more.setToolTip("More")
-        self._more.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._more.clicked.connect(
-            lambda: self.menuRequested.emit(self._more.mapToGlobal(QPoint(0, self._more.height() + 4)))
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 22, 14, 14)
+        layout.setSpacing(6)
+        layout.addWidget(BrandLabel())
+        layout.addSpacing(10)
+        layout.addWidget(self.search)
+        layout.addSpacing(20)
+        for key, icon_name, text in self.SECTIONS:
+            button = NavButton(icon_name, text)
+            button.clicked.connect(lambda _checked=False, k=key: self.navigate.emit(k))
+            self._tabs.addButton(button)
+            self._buttons[key] = button
+            layout.addWidget(button)
+        self.fetch_subtitles = self._action(
+            "download", "Fetch Subtitles", "Download missing English subtitles for your movies and episodes"
         )
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(theme.SIDE_MARGIN, 0, theme.SIDE_MARGIN - 8, 0)
-        layout.setSpacing(12)
-        layout.addWidget(logo)
-        layout.addSpacing(22)
-        layout.addLayout(tabs)
+        self.fetch_subtitles.clicked.connect(self.subtitlesRequested)
+        layout.addWidget(self.fetch_subtitles)
         layout.addStretch(1)
-        layout.addWidget(self.status, 2)
-        layout.addWidget(self.search, 6)
-        layout.addWidget(self.rescan)
-        layout.addWidget(folders)
-        layout.addWidget(self._more)
+
+        self.activity = ActivityLog()
+        layout.addWidget(self.activity)
+
+        self.status = ElidedLabel()
+        self.status.setObjectName("statusLabel")
+        self.status.setContentsMargins(10, 0, 0, 0)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.status)
+
+        self.rescan = self._action("refresh", "Rescan Library", "Look for new, moved and deleted videos (F5)")
+        self.rescan.clicked.connect(self.rescanRequested)
+        folders = self._action("folder", "Add Folders", "Add a folder of movies or TV shows to the library")
+        folders.clicked.connect(self.addFolderRequested)
+        more = self._action("more", "More", "Settings and About")
+        more.clicked.connect(lambda: self.menuRequested.emit(more.mapToGlobal(QPoint(more.width(), 0))))
+        for button in (self.rescan, folders, more):
+            layout.addWidget(button)
+
+    def _action(self, icon_name: str, text: str, tip: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("sidebarAction")
+        button.setIcon(icons.icon(icon_name, "#9CA3AF", "#4a4d57"))
+        button.setIconSize(QSize(16, 16))
+        button.setToolTip(tip)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        return button
+
+    def set_counts(self, counts: dict[str, int | None]) -> None:
+        for key, count in counts.items():
+            self._buttons[key].set_count(count)
 
     def set_active(self, key: str | None) -> None:
-        """Highlight a tab, or none when a detail or search page is showing."""
+        """Highlight a section, or none when a detail or search page is showing."""
         self._tabs.setExclusive(False)
         for name, button in self._buttons.items():
             button.setChecked(name == key)
@@ -155,6 +218,7 @@ class MainWindow(QMainWindow):
         self.images = ImageLoader(self)
         self.thumbs = ThumbnailService(library, self)
         self._scan: ScanWorker | None = None
+        self._subtitle_fetch: SubtitleWorker | None = None
         self._closing = False
         self._scan_was_manual = False
         self._rescan_queued = False
@@ -162,30 +226,33 @@ class MainWindow(QMainWindow):
         self._before_search: QWidget | None = None
 
         self.setWindowTitle(APP_NAME)
-        self.setMinimumSize(900, 560)
+        self.setMinimumSize(960, 600)
 
-        self.top_bar = TopBar()
+        self.sidebar = Sidebar()
+        self.top_bar = self.sidebar  # the search box, status line and Rescan button live here
         self.home = HomePage(self)
         self.shows_page = GridPage(
-            self, "TV Shows", lambda: [show_card(s) for s in library.shows()], "No TV shows in your library yet."
+            self, "TV Shows", lambda: [show_card(s, poster=True) for s in library.shows()],
+            "No TV shows in your library yet.", poster=True,
         )
         self.movies_page = GridPage(
-            self, "Movies", lambda: [movie_card(m) for m in library.movies()], "No movies in your library yet."
+            self, "Movies", lambda: [movie_card(m, poster=True) for m in library.movies()],
+            "No movies in your library yet.", poster=True,
         )
         self.search_page = SearchPage(self)
         self.show_page = ShowPage(self)
         self.pages = QStackedWidget()
         for page in (self.home, self.shows_page, self.movies_page, self.search_page, self.show_page):
             self.pages.addWidget(page)
-        self._tabs = {"home": self.home, "shows": self.shows_page, "movies": self.movies_page}
+        self._tabs = {"home": self.home, "movies": self.movies_page, "shows": self.shows_page}
 
         self.browser = QWidget()
         self.browser.setObjectName("browser")
-        column = QVBoxLayout(self.browser)
-        column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(0)
-        column.addWidget(self.top_bar)
-        column.addWidget(self.pages, 1)
+        row = QHBoxLayout(self.browser)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self.sidebar)
+        row.addWidget(self.pages, 1)
 
         self.player = PlayerPage(library)
         self.player.closed.connect(self._player_closed)
@@ -197,7 +264,8 @@ class MainWindow(QMainWindow):
         self.top_bar.navigate.connect(self.show_tab)
         self.top_bar.searchChanged.connect(self._search)
         self.top_bar.rescanRequested.connect(lambda: self.rescan(manual=True))
-        self.top_bar.foldersRequested.connect(self.manage_folders)
+        self.top_bar.addFolderRequested.connect(self.add_folder)
+        self.top_bar.subtitlesRequested.connect(self.fetch_subtitles)
         self.top_bar.menuRequested.connect(self._show_more_menu)
         self.thumbs.backdropReady.connect(self.show_page.on_backdrop)
 
@@ -376,6 +444,11 @@ class MainWindow(QMainWindow):
         self.home.reload()
         self.shows_page.reload()
         self.movies_page.reload()
+        counts = self.library.counts()
+        shows, movies = counts.get("show", 0), counts.get("movie", 0)
+        self.sidebar.set_counts({
+            "home": shows + movies + counts.get("other", 0), "movies": movies, "shows": shows,
+        })
         if self.pages.currentWidget() is self.search_page:
             self.search_page.reload()
         if self.show_page.show_id is not None and not self.show_page.reload(follow_next=after_playback):
@@ -397,6 +470,7 @@ class MainWindow(QMainWindow):
         self._scan.finished.connect(self._scan_thread_done)
         self.top_bar.rescan.setEnabled(False)
         self.top_bar.rescan.setText("Scanning…")
+        self.sidebar.activity.log("INFO", "Scanning library...")
         self._scan.start()
         self.home.refresh_empty_state()
 
@@ -413,9 +487,13 @@ class MainWindow(QMainWindow):
     def _scan_finished(self, summary: ScanSummary | None, error: str = "") -> None:
         if summary is None:
             self._set_status(f"Scan failed: {error}", 12000)
+            self.sidebar.activity.log("WARN", f"Scan failed: {error}")
             return
         if summary.cancelled:
             return
+        self.sidebar.activity.log(
+            "DONE", f"Scan complete: {summary.added} new, {summary.removed} removed, {summary.moved} moved."
+        )
         if summary.changed:
             self.reload()
         queued = self.thumbs.queue_missing()
@@ -444,6 +522,38 @@ class MainWindow(QMainWindow):
         if self._rescan_queued:
             self._rescan_queued = False
             self.rescan(manual=True)
+
+    def fetch_subtitles(self) -> None:
+        """Search online for the English subtitles the library is missing (background thread)."""
+        if self._closing or self._subtitle_fetch is not None:
+            return
+        worker = self._subtitle_fetch = SubtitleWorker(self.library, parent=self)
+        worker.logLine.connect(self.sidebar.activity.log)
+        worker.finished.connect(self._subtitle_fetch_done)
+        self.top_bar.fetch_subtitles.setEnabled(False)
+        self.top_bar.fetch_subtitles.setText("Fetching…")
+        worker.start()
+
+    def _subtitle_fetch_done(self) -> None:
+        worker, self._subtitle_fetch = self._subtitle_fetch, None
+        if worker is not None:
+            worker.deleteLater()
+        self.top_bar.fetch_subtitles.setEnabled(True)
+        self.top_bar.fetch_subtitles.setText("Fetch Subtitles")
+
+    def add_folder(self) -> None:
+        """Pick a folder (e.g. on a USB drive), add it to the library and scan it."""
+        folders = self.library.folders()
+        start = os.path.dirname(folders[-1].path) if folders else str(default_media_dir().parent)
+        chosen = QFileDialog.getExistingDirectory(self, "Add a folder to your library", start)
+        if not chosen:
+            return
+        folder, message = self.library.add_folder(chosen)
+        if folder is None:
+            QMessageBox.information(self, "Add Folders", message)
+            return
+        self.reload()
+        self.rescan(manual=True)
 
     def manage_folders(self) -> None:
         dialog = FoldersDialog(self.library, self)
@@ -505,6 +615,9 @@ class MainWindow(QMainWindow):
         if self._scan is not None:
             self._scan.requestInterruption()
             self._scan.wait(5000)
+        if self._subtitle_fetch is not None:
+            self._subtitle_fetch.requestInterruption()
+            self._subtitle_fetch.wait(5000)
         self.thumbs.stop()
         self.images.shutdown()
         super().closeEvent(event)

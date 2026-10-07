@@ -36,7 +36,8 @@ from ..subtitles import ExternalSubtitle, find_external_subtitles
 from . import icons, theme
 
 _TICK_MS = 200
-_HIDE_AFTER_MS = 3000
+_HIDE_AFTER_MS = 2500
+_HUD_MS = 500
 _TOP_HEIGHT = 60
 _BOTTOM_HEIGHT = 104
 
@@ -68,7 +69,6 @@ class VideoSurface(QFrame):
         self.activity.emit()
 
     def mousePressEvent(self, event) -> None:
-        self.activity.emit()
         if event.button() == Qt.MouseButton.LeftButton:
             self._click.start()
 
@@ -222,6 +222,17 @@ class PlayerPage(QWidget):
 
         self._build_top_bar()
         self._build_bottom_bar()
+        self._hud = QLabel(self)
+        self._hud.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._hud.setStyleSheet(
+            "background: rgba(0, 0, 0, 170); color: white; border-radius: 22px;"
+            "font-size: 22px; font-weight: 600; padding: 10px 26px;"
+        )
+        self._hud.hide()
+        self._hud_timer = QTimer(self)
+        self._hud_timer.setSingleShot(True)
+        self._hud_timer.setInterval(_HUD_MS)
+        self._hud_timer.timeout.connect(self._hud.hide)
 
         self._tick = QTimer(self)
         self._tick.setInterval(_TICK_MS)
@@ -340,6 +351,7 @@ class PlayerPage(QWidget):
         self.controls.setGeometry(0, height - _BOTTOM_HEIGHT, width, _BOTTOM_HEIGHT)
         self.top_bar.raise_()
         self.controls.raise_()
+        self._hud.raise_()
 
     # ----------------------------------------------------------------- VLC
 
@@ -369,7 +381,8 @@ class PlayerPage(QWidget):
             QMessageBox.critical(
                 self.window(), "Theia",
                 "The video player could not be started.\n\n"
-                f"{error}\n\nIs VLC installed? On Ubuntu:  sudo apt install vlc",
+                f"{error}\n\nIs VLC installed? Run ./run.sh in a terminal to install it, or use your package manager "
+                "(apt: vlc libvlc-dev · pacman: vlc vlc-plugins-all · dnf: vlc from RPM Fusion).",
             )
             return False
         self._vlc_module, self._vlc, self._player = vlc, instance, player
@@ -431,7 +444,11 @@ class PlayerPage(QWidget):
         self._tick.start()
         self._saver.start()
         self.setFocus()
-        self._wake()
+        self._enter_fullscreen()
+        self._hider.stop()
+        self.top_bar.hide()
+        self.controls.hide()
+        self.surface.setCursor(Qt.CursorShape.BlankCursor)
         return True
 
     def _finish_current(self) -> None:
@@ -554,7 +571,7 @@ class PlayerPage(QWidget):
         self._set_play_icon(not playing)
         if playing:
             self._save_progress()  # save immediately on pause
-        self._wake()
+        self._show_hud("❚❚" if playing else "▶")
 
     def _set_play_icon(self, playing: bool) -> None:
         if playing != self._icon_shows_pause:
@@ -568,6 +585,7 @@ class PlayerPage(QWidget):
         if position < 0:
             return
         self.seek(position + seconds)
+        self._show_hud(f"{seconds:+.0f}s")
 
     def seek(self, position: float) -> None:
         duration = self._duration()
@@ -579,7 +597,6 @@ class PlayerPage(QWidget):
         self._expected_start = position
         self._seek.set_value(position)
         self._update_time_label(position, duration)
-        self._wake()
 
     def restart(self) -> None:
         if self._media is not None:
@@ -631,7 +648,7 @@ class PlayerPage(QWidget):
     def change_volume(self, delta: int) -> None:
         self.set_volume(self._volume + delta)
         self._flash(f"Volume {self._volume}%")
-        self._wake()
+        self._show_hud(f"Volume {self._volume}%")
 
     def toggle_mute(self) -> None:
         self._muted = not self._muted
@@ -639,7 +656,7 @@ class PlayerPage(QWidget):
             self._player.audio_set_mute(self._muted)
         self._store_volume()
         self._refresh_volume_ui()
-        self._wake()
+        self._show_hud("Muted" if self._muted else f"Volume {self._volume}%")
 
     def _refresh_volume_ui(self) -> None:
         silent = self._muted or self._volume == 0
@@ -654,10 +671,14 @@ class PlayerPage(QWidget):
         if window.isFullScreen():
             self._leave_fullscreen()
         else:
+            self._enter_fullscreen()
+
+    def _enter_fullscreen(self) -> None:
+        window = self.window()
+        if not window.isFullScreen():
             self._was_maximized = window.isMaximized()
             window.showFullScreen()
-            self._fullscreen_button.setIcon(icons.icon("fullscreen-exit"))
-        self._wake()
+        self._fullscreen_button.setIcon(icons.icon("fullscreen-exit"))
 
     def _leave_fullscreen(self) -> None:
         window = self.window()
@@ -716,6 +737,12 @@ class PlayerPage(QWidget):
                 self._load_external(by_label[preferred].path)
             elif player.video_get_spu() < 0 and sidecar is not None:
                 self._load_external(sidecar.path)  # the release's own subtitle file
+            elif player.video_get_spu() < 0:
+                # Nothing preferred: show whatever subtitles exist (downloaded/sidecar first).
+                if self._externals:
+                    self._load_external(self._externals[0].path)
+                elif subtitles:
+                    player.video_set_spu(next((t for t, n in subtitles if "forced" not in n.lower()), subtitles[0][0]))
         else:
             # Subtitles are switched off, but keep "forced" tracks (foreign-language dialogue).
             current = player.video_get_spu()
@@ -843,6 +870,16 @@ class PlayerPage(QWidget):
         self._note.setText(text)
         if text:
             self._note_timer.start(4500)
+
+    def _show_hud(self, text: str) -> None:
+        """Brief centred pill over the video; leaves the top and bottom bars alone."""
+        self._hud.setText(text)
+        self._hud.adjustSize()
+        self._hud.move((self.width() - self._hud.width()) // 2, (self.height() - self._hud.height()) // 2)
+        self._hud.winId()
+        self._hud.show()
+        self._hud.raise_()
+        self._hud_timer.start()
 
     def _wake(self) -> None:
         """Mouse or keyboard activity: show the bars and restart the hide countdown."""

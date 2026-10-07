@@ -272,9 +272,16 @@ class Playback(LibraryCase):
         self.watch(self.episodes[1], 0.50, when=3000)
         self.watch(self.episodes[4], 0.92, when=2000)
         listed = self.library.continue_watching()
-        self.assertEqual([m.id for m in listed], [self.episodes[1].id, self.episodes[4].id, heat.id])
+        self.assertEqual([m.id for m in listed], [self.episodes[1].id, heat.id])  # one card per show
         self.assertEqual(listed[0].full_title, "Friends  ·  S1:E2  ·  The One Numbered 12")
         self.assertEqual(listed[0].heading, "Friends")
+
+    def test_continue_watching_moves_a_show_to_its_latest_episode(self):
+        self.watch(self.episodes[0], 0.30, when=1000)
+        self.watch(self.episodes[3], 0.60, when=2000)
+        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[3].id])
+        self.watch(self.episodes[3], 1.0, when=3000)  # finishing it falls back to the other unfinished one
+        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[0].id])
 
     def test_clear_progress_and_mark_watched(self):
         heat = self.by_title("Heat")

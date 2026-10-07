@@ -2,3 +2,4 @@
 PyQt6>=6.6,<7          # GUI toolkit (bundles Qt 6, QtSvg)
 python-vlc>=3.0.18     # ctypes bindings for the system libVLC (embedded player)
 guessit>=3.8           # release-name parser: titles, years, seasons, episodes
+subliminal>=2.2        # online subtitle search (Fetch Subtitles button)

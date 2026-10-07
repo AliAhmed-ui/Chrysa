@@ -37,6 +37,7 @@ _ICONS = {
     "fullscreen-exit": f'<g {_STROKE}><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></g>',
     "subtitles": f'<g {_STROKE}><rect x="3" y="5" width="18" height="14" rx="2.5"/>'
                  '<path d="M7 11.5h4M14 11.5h3M7 15h2.5M12.5 15H17"/></g>',
+    "download": f'<g {_STROKE}><path d="M12 4v10M7.5 10l4.5 4.5 4.5-4.5M5 19h14"/></g>',
     "audio": f'<g {_STROKE}><path d="M4 10v4M8 6.5v11M12 9v6M16 4.5v15M20 10v4"/></g>',
     "back": f'<g {_STROKE}><path d="M19 12H5M11 6l-6 6 6 6"/></g>',
     "chevron-left": f'<g {_BOLD}><path d="M15 5l-7 7 7 7"/></g>',
@@ -48,6 +49,9 @@ _ICONS = {
     "folder": f'<g {_STROKE}><path d="M3 7.5a2 2 0 0 1 2-2h4.2l2 2.4H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></g>',
     "check": f'<g {_BOLD}><path d="M5 12.5l4.5 4.5L19 7.5"/></g>',
     "more": f'<g {_FILL}><circle cx="12" cy="5.5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="18.5" r="1.7"/></g>',
+    "library": f'<g {_STROKE}><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16"/></g>',
+    "tv": f'<g {_STROKE}><rect x="2.5" y="7" width="19" height="14" rx="2.5"/><path d="M16.5 2.5L12 7 7.5 2.5"/></g>',
+    "clock": f'<g {_STROKE}><circle cx="12" cy="12" r="9.5"/><path d="M12 6.5V12l3.5 2"/></g>',
     "film": f'<g {_STROKE}><rect x="3.5" y="4.5" width="17" height="15" rx="2"/>'
             '<path d="M8 4.5v15M16 4.5v15M3.5 9.5H8M3.5 14.5H8M16 9.5h4.5M16 14.5h4.5"/></g>',
 }
