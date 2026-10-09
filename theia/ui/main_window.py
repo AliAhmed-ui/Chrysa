@@ -65,7 +65,8 @@ class NavButton(QPushButton):
         super().__init__(text, parent)
         self.setObjectName("navButton")
         self.setCheckable(True)
-        self.setIcon(icons.icon(icon_name, theme.ACCENT))
+        self._icon_name = icon_name
+        self.apply_theme()
         self.setIconSize(QSize(18, 18))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -73,6 +74,9 @@ class NavButton(QPushButton):
         self._count = QLabel(self)
         self._count.setObjectName("navCount")
         self._count.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def apply_theme(self) -> None:
+        self.setIcon(icons.icon(self._icon_name, theme.ACCENT))
 
     def set_count(self, count: int | None) -> None:
         self._count.setText("" if count is None else str(count))
@@ -102,11 +106,6 @@ class ActivityLog(QPlainTextEdit):
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setPlaceholderText("Activity log")
-        self.setStyleSheet(
-            "QPlainTextEdit#activityLog { background: #0E0F12; "
-            "border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; "
-            "font-family: monospace; font-size: 11px; color: #86868B; padding: 6px; }"
-        )
 
     def log(self, level: str, message: str) -> None:
         self.appendPlainText(f"{time.strftime('%H:%M:%S')} [{level}] {message}")
@@ -123,6 +122,7 @@ class Sidebar(QWidget):
     subtitlesRequested = pyqtSignal()
     addFolderRequested = pyqtSignal()
     menuRequested = pyqtSignal(QPoint)
+    themeRequested = pyqtSignal()
 
     SECTIONS = (
         ("home", "library", "Library"),
@@ -141,7 +141,9 @@ class Sidebar(QWidget):
         self.search.setPlaceholderText("Search")
         self.search.setClearButtonEnabled(True)
         self.search.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # no focus ring on launch; "/" and Ctrl+F still jump here
-        self.search.addAction(icons.icon("search", theme.TEXT_MUTED), QLineEdit.ActionPosition.LeadingPosition)
+        self._search_icon = self.search.addAction(
+            icons.icon("search", theme.TEXT_MUTED), QLineEdit.ActionPosition.LeadingPosition
+        )
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(160)
@@ -185,19 +187,34 @@ class Sidebar(QWidget):
         self.rescan.clicked.connect(self.rescanRequested)
         folders = self._action("folder", "Add Folders", "Add a folder of movies or TV shows to the library")
         folders.clicked.connect(self.addFolderRequested)
+        self.theme_button = self._action("palette", "", "Change Theme (Ctrl+T)")
+        self.theme_button.clicked.connect(self.themeRequested)
+        self.set_theme_name(theme.manager.get_theme_name())
         more = self._action("more", "More", "Settings and About")
         more.clicked.connect(lambda: self.menuRequested.emit(more.mapToGlobal(QPoint(more.width(), 0))))
-        for button in (self.rescan, folders, more):
+        for button in (self.rescan, folders, self.theme_button, more):
             layout.addWidget(button)
 
     def _action(self, icon_name: str, text: str, tip: str) -> QPushButton:
         button = QPushButton(text)
         button.setObjectName("sidebarAction")
-        button.setIcon(icons.icon(icon_name, "#9CA3AF", "#4a4d57"))
+        button.setProperty("iconName", icon_name)
+        button.setIcon(icons.icon(icon_name, theme.ICON_IDLE, theme.ICON_DISABLED))
         button.setIconSize(QSize(16, 16))
         button.setToolTip(tip)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         return button
+
+    def set_theme_name(self, name: str) -> None:
+        self.theme_button.setText(f"Theme: {name}")
+        self.theme_button.setToolTip(f"Theme: {name} - click to change (Ctrl+T)")
+
+    def apply_theme(self) -> None:
+        self._search_icon.setIcon(icons.icon("search", theme.TEXT_MUTED))
+        for button in self.findChildren(QPushButton, "sidebarAction"):
+            name = button.property("iconName")
+            if name:
+                button.setIcon(icons.icon(name, theme.ICON_IDLE, theme.ICON_DISABLED))
 
     def set_counts(self, counts: dict[str, int | None]) -> None:
         for key, count in counts.items():
@@ -267,6 +284,8 @@ class MainWindow(QMainWindow):
         self.top_bar.addFolderRequested.connect(self.add_folder)
         self.top_bar.subtitlesRequested.connect(self.fetch_subtitles)
         self.top_bar.menuRequested.connect(self._show_more_menu)
+        self.top_bar.themeRequested.connect(self.change_theme)
+        theme.manager.subscribe(self._on_theme_changed)
         self.thumbs.backdropReady.connect(self.show_page.on_backdrop)
 
         self._status_timer = QTimer(self)
@@ -298,7 +317,27 @@ class MainWindow(QMainWindow):
         bind("Escape", self._escape)
         bind("Alt+Left", self.go_back)
         bind("F11", lambda: self.showNormal() if self.isFullScreen() else self.showFullScreen())
+        bind("Ctrl+T", self.change_theme)
         bind("Ctrl+Q", self.close)
+
+    # --------------------------------------------------------------- theme
+
+    def change_theme(self) -> None:
+        """Switch to the next theme; the style sheet, icons and painted widgets follow."""
+        theme.manager.cycle_theme()
+
+    def _on_theme_changed(self, palette) -> None:
+        self.top_bar.set_theme_name(palette["display_name"])
+        self.setUpdatesEnabled(False)  # one repaint for the whole switch
+        try:
+            for widget in self.findChildren(QWidget):
+                refresh = getattr(widget, "apply_theme", None)
+                if callable(refresh):
+                    refresh()
+        finally:
+            self.setUpdatesEnabled(True)
+        for widget in self.findChildren(QWidget):
+            widget.update()
 
     def _focus_search(self) -> None:
         self.top_bar.search.setFocus()
@@ -607,6 +646,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._closing = True  # no new background work from here on
+        theme.manager.unsubscribe(self._on_theme_changed)
         self._startup_scan.stop()
         if self.player.is_active:
             self.player.close_player()  # saves the position and leaves fullscreen

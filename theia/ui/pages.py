@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 
 from ..models import Media, NextUp, Show, format_duration, plural
 from . import icons, theme
+from . import backdrop
 from .images import ImageLoader
 from .widgets import (
     CARD_INSET,
@@ -54,33 +55,20 @@ from .widgets import (
 
 
 class AmbientPage(QWidget):
-    """Page content on clean obsidian with a faint cool-graphite sheen along the top edge.
+    """Transparent page content: the scroll area's viewport paints the base colour and themed scene.
 
-    ``tint`` is accepted for the pages that still pass one, but the canvas stays neutral.
+    ``tint`` is accepted for the pages that still pass one; the canvas stays neutral.
     """
-
-    OBSIDIAN = QColor("#0B0C0E")
-    SHEEN = QColor("#16181D")
-    SHEEN_HEIGHT = 300
 
     def __init__(self, tint: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._tint = QColor(tint) if tint else QColor(self.SHEEN)
+        self._tint = QColor(tint) if tint else QColor(theme.SURFACE)
 
     def tint(self) -> QColor:
         return QColor(self._tint)
 
     def set_tint(self, colour: QColor, animate: bool = True) -> None:
         self._tint = QColor(colour)  # remembered only; it no longer colours the canvas
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.fillRect(event.rect(), self.OBSIDIAN)
-        sheen = QLinearGradient(0, 0, 0, self.SHEEN_HEIGHT)
-        sheen.setColorAt(0.0, self.SHEEN)
-        sheen.setColorAt(1.0, self.OBSIDIAN)
-        painter.fillRect(QRectF(0, 0, self.width(), self.SHEEN_HEIGHT), sheen)
-        painter.end()
 
 
 @dataclass(slots=True)
@@ -117,7 +105,6 @@ class HeroCarousel(QWidget):
     RADIUS = 22.0
     INTERVAL_MS = 9000
     TEXT_INSET = 48  # generous negative space left of the typography
-    DEFAULT_TINT = QColor("#16181D")
 
     tintChanged = pyqtSignal(QColor)  # the glow colour the page behind should take on
 
@@ -139,12 +126,6 @@ class HeroCarousel(QWidget):
         self._info.setObjectName("ghost")
         self._info.setCursor(Qt.CursorShape.PointingHandCursor)
         self._info.setFixedHeight(48)
-        self._info.setStyleSheet(
-            "QPushButton { background: rgba(255, 255, 255, 0.14); color: #FFFFFF; font-size: 15px; font-weight: 600;"
-            " border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 24px; padding: 0 28px; }"
-            "QPushButton:hover { background: rgba(255, 255, 255, 0.22); border-color: rgba(255, 255, 255, 0.38); }"
-            "QPushButton:pressed { background: rgba(255, 255, 255, 0.3); }"
-        )
         self._info.clicked.connect(self._more_info)
 
         self._animation = QVariantAnimation(self)
@@ -218,7 +199,7 @@ class HeroCarousel(QWidget):
     def _publish_tint(self) -> None:
         """Tell the page behind which glow colour suits the slide on show."""
         if not self._items:
-            self.tintChanged.emit(self.DEFAULT_TINT)
+            self.tintChanged.emit(QColor(theme.SURFACE))
             return
         self.tintChanged.emit(self._item_tint(self._items[self._index]))
 
@@ -319,7 +300,8 @@ class HeroCarousel(QWidget):
 
         # Cinematic grade: #121318 dissolves from the left edge through an eased ramp, so the
         # type sits on solid shade while the picture opens up to the right.
-        ink = (11, 12, 14)
+        base = QColor(theme.BG)
+        ink = (base.red(), base.green(), base.blue())
         side = QLinearGradient(card.left(), 0, card.right(), 0)
         for stop, alpha in ((0.0, 255), (0.16, 248), (0.30, 214), (0.44, 150), (0.58, 84), (0.72, 34), (0.86, 6), (1.0, 0)):
             side.setColorAt(stop, QColor(*ink, alpha))
@@ -420,6 +402,7 @@ class HomePage(SmoothScrollArea):
         layout.addWidget(self._empty, 1)
         layout.addStretch(1)
         self.setWidget(content)
+        backdrop.install(self)
 
     def reload(self) -> None:
         library, card = self._host.library, self._host.make_card
@@ -558,6 +541,7 @@ class GridPage(SmoothScrollArea):
         layout.addWidget(self._grid)
         layout.addStretch(1)
         self.setWidget(content)
+        backdrop.install(self)
 
     def reload(self) -> None:
         models = self._load()
@@ -597,6 +581,7 @@ class SearchPage(SmoothScrollArea):
             self._sections[key] = (label, grid)
         layout.addStretch(1)
         self.setWidget(content)
+        backdrop.install(self)
 
     def search(self, query: str) -> None:
         self._query = query.strip()
@@ -649,15 +634,15 @@ class ShowBanner(QWidget):
         self._back.setToolTip("Back (Esc)")
         self._back.setCursor(Qt.CursorShape.PointingHandCursor)
         self._back.setFixedSize(44, 44)
-        self._back.setStyleSheet(
-            "QToolButton { background: rgba(0, 0, 0, 0.65); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 22px; }"
-            "QToolButton:hover { background: rgba(40, 42, 48, 0.9); }"
-        )
+        self._back.setObjectName("backRound")
         self._back.move(theme.SIDE_MARGIN - 8, 22)
         self._back.clicked.connect(self.backRequested)
 
         self._play = PlayButton(parent=self)
         self._play.clicked.connect(self.playRequested)
+
+    def apply_theme(self) -> None:
+        self._back.setIcon(icons.icon("back"))
 
     def set_show(self, show: Show, next_up: NextUp | None) -> None:
         self._show, self._next = show, next_up
@@ -716,13 +701,15 @@ class ShowBanner(QWidget):
             paint_placeholder(painter, rect, self._show.title)
 
         side = QLinearGradient(0, 0, rect.width(), 0)
-        side.setColorAt(0.0, QColor(11, 12, 14, 235))
-        side.setColorAt(0.35, QColor(11, 12, 14, 150))
-        side.setColorAt(0.75, QColor(11, 12, 14, 0))
+        base = QColor(theme.BG)
+        ink = (base.red(), base.green(), base.blue())
+        side.setColorAt(0.0, QColor(*ink, 235))
+        side.setColorAt(0.35, QColor(*ink, 150))
+        side.setColorAt(0.75, QColor(*ink, 0))
         painter.fillRect(rect, side)
         fade = QLinearGradient(0, rect.height() * 0.45, 0, rect.height())
-        fade.setColorAt(0.0, QColor(11, 12, 14, 0))
-        fade.setColorAt(1.0, QColor(11, 12, 14, 255))
+        fade.setColorAt(0.0, QColor(*ink, 0))
+        fade.setColorAt(1.0, QColor(*ink, 255))
         painter.fillRect(rect, fade)
 
         if self._show is None:
@@ -806,6 +793,11 @@ class EpisodeRow(QWidget):
         self._restart.setVisible(media.in_progress)
         self._restart.clicked.connect(lambda: self.playRequested.emit(self.media, True))
 
+    def apply_theme(self) -> None:
+        if self._button.objectName() == "outline":
+            self._button.setIcon(icons.icon("play", theme.TEXT_SOFT))
+        self._restart.setIcon(icons.icon("restart", theme.TEXT_DIM))
+
     def on_thumbnail(self, media_id: int, path: str) -> None:
         if path and media_id == self.media.id and not self._image:
             self._image = path
@@ -857,7 +849,7 @@ class EpisodeRow(QWidget):
         if media.in_progress or media.is_finished:
             track = QRectF(thumb.left(), thumb.bottom() - 4, thumb.width(), 4)
             painter.fillRect(track, QColor(255, 255, 255, 90))
-            painter.fillRect(QRectF(track.left(), track.top(), track.width() * media.fraction, 4), QColor(255, 255, 255, 235))
+            painter.fillRect(QRectF(track.left(), track.top(), track.width() * media.fraction, 4), QColor(theme.ACCENT))
         painter.restore()
         if media.is_finished:
             badge = QRectF(thumb.center().x() - 13, thumb.center().y() - 13, 26, 26)
@@ -964,6 +956,7 @@ class ShowPage(SmoothScrollArea):
         layout.addLayout(self._list)
         layout.addStretch(1)
         self.setWidget(content)
+        backdrop.install(self)
 
     @property
     def show_id(self) -> int | None:

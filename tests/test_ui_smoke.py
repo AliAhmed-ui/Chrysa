@@ -138,6 +138,65 @@ class BrowsingWindow(LibraryCase):
         self.wait_for(lambda: not window.is_scanning and window.pages.currentWidget() is window.home)
         self.assertEqual(self.titles(window.home.shows_row), [])
 
+    def test_cycling_themes_restyles_everything_and_persists(self):
+        from theia.ui.themes import THEMES
+
+        window = self.window
+        start = theme.manager.current_theme_key
+        self.addCleanup(theme.manager.set_theme, start)
+        saved = []
+        theme.manager.bind_storage(lambda: None, lambda key: (saved.append(key), self.library.set_setting("ui.theme", key)))
+        window.show_tab("movies")
+        seen = []
+        for _ in THEMES:
+            window.top_bar.theme_button.click()
+            self.spin(20)
+            palette = theme.manager.get_current_theme()
+            seen.append(palette["key"])
+            self.assertIn(palette["display_name"], window.top_bar.theme_button.text())
+            self.assertEqual(theme.BG, palette["bg_base"])
+            self.assertIn(palette["bg_base"], self.app.styleSheet())
+            self.assertFalse(window.grab().isNull())
+            window.show_tab("home")
+            self.assertFalse(window.grab().isNull())
+            window.show_tab("movies")
+        self.assertEqual(sorted(seen), sorted(THEMES))
+        self.assertEqual(theme.manager.current_theme_key, start)  # a full lap returns to the start
+        self.assertEqual(saved, seen)
+        self.assertEqual(self.library.setting("ui.theme"), start)
+
+    def test_backdrop_stays_atmospheric_and_follows_the_theme(self):
+        from PyQt6.QtCore import QRectF
+        from PyQt6.QtGui import QColor, QImage, QPainter
+
+        from theia.ui import backdrop as bd
+        from theia.ui.themes import THEMES
+
+        start = theme.manager.current_theme_key
+        self.addCleanup(theme.manager.set_theme, start)
+        shared = bd.backdrop()
+        for key in THEMES:
+            theme.manager.set_theme(key)
+            self.assertEqual(shared.key, key)
+            shared._fade = 1.0
+            for size in ((300, 200), (1600, 900)):  # tiny and large windows both draw cleanly
+                image = QImage(*size, QImage.Format.Format_ARGB32)
+                image.fill(QColor(theme.BG))
+                painter = QPainter(image)
+                shared.paint(painter, QRectF(image.rect()))
+                painter.end()
+                base = QColor(theme.BG)
+                samples = [image.pixelColor(x, y) for x in range(0, size[0], 7) for y in range(0, size[1], 7)]
+                mean = sum(
+                    abs(c.red() - base.red()) + abs(c.green() - base.green()) + abs(c.blue() - base.blue())
+                    for c in samples
+                ) / (3 * len(samples))
+                # Visible, but most of the canvas stays background so content keeps priority.
+                self.assertLess(mean, 60, f"{key} backdrop floods the page")
+            self.assertTrue(any(
+                image.pixelColor(x, y) != QColor(theme.BG) for x in range(0, 1600, 5) for y in range(0, 900, 5)
+            ), f"{key} drew nothing")
+
     def test_season_names(self):
         self.assertEqual([season_name(n) for n in (1, 12, 0, -1)], ["Season 1", "Season 12", "Specials", "Other Episodes"])
 

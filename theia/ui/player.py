@@ -102,6 +102,10 @@ class Slider(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
 
+    def set_colour(self, colour: str) -> None:
+        self._colour = QColor(colour)
+        self.update()
+
     def set_maximum(self, maximum: float) -> None:
         self._maximum = max(0.001, maximum)
         self.update()
@@ -177,6 +181,7 @@ class Slider(QWidget):
 
 def _tool(icon_name: str, tip: str, size: int = 28) -> QToolButton:
     button = QToolButton()
+    button.setProperty("iconName", icon_name)
     button.setIcon(icons.icon(icon_name))
     button.setIconSize(QSize(size, size))
     button.setToolTip(tip)
@@ -224,10 +229,7 @@ class PlayerPage(QWidget):
         self._build_bottom_bar()
         self._hud = QLabel(self)
         self._hud.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._hud.setStyleSheet(
-            "background: rgba(0, 0, 0, 170); color: white; border-radius: 22px;"
-            "font-size: 22px; font-weight: 600; padding: 10px 26px;"
-        )
+        self._hud.setObjectName("playerHud")
         self._hud.hide()
         self._hud_timer = QTimer(self)
         self._hud_timer.setSingleShot(True)
@@ -285,6 +287,7 @@ class PlayerPage(QWidget):
 
         self._play_button = _tool("pause", "Play / Pause (Space)", 32)
         self._play_button.clicked.connect(self.toggle_pause)
+        self._show_play_icon()
         back10 = _tool("back10", f"Back {SKIP_SECONDS} seconds (←)")
         back10.clicked.connect(lambda: self.skip(-SKIP_SECONDS))
         forward10 = _tool("forward10", f"Forward {SKIP_SECONDS} seconds (→)")
@@ -294,7 +297,7 @@ class PlayerPage(QWidget):
 
         self._mute_button = _tool("volume", "Mute (M)", 26)
         self._mute_button.clicked.connect(self.toggle_mute)
-        self._volume_slider = Slider("#ffffff")
+        self._volume_slider = Slider(theme.ACCENT_ALT)
         self._volume_slider.setFixedWidth(110)
         self._volume_slider.set_maximum(100)
         self._volume_slider.set_value(self._volume)
@@ -306,6 +309,7 @@ class PlayerPage(QWidget):
         self._next_button = QToolButton()
         self._next_button.setObjectName("textTool")
         self._next_button.setText("Next Episode")
+        self._next_button.setProperty("iconName", "next")
         self._next_button.setIcon(icons.icon("next"))
         self._next_button.setIconSize(QSize(24, 24))
         self._next_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -576,7 +580,24 @@ class PlayerPage(QWidget):
     def _set_play_icon(self, playing: bool) -> None:
         if playing != self._icon_shows_pause:
             self._icon_shows_pause = playing
-            self._play_button.setIcon(icons.icon("pause" if playing else "play"))
+            self._show_play_icon()
+
+    def _show_play_icon(self) -> None:
+        self._play_button.setIcon(icons.icon("pause" if self._icon_shows_pause else "play", theme.ACCENT))
+
+    def apply_theme(self) -> None:
+        """Recolour the controls whose icons and meters were built from the previous palette."""
+        for button in self.findChildren(QToolButton):
+            name = button.property("iconName")
+            if name:
+                button.setIcon(icons.icon(name))
+        self._show_play_icon()
+        self._refresh_volume_ui()
+        self._fullscreen_button.setIcon(
+            icons.icon("fullscreen-exit" if self.window().isFullScreen() else "fullscreen")
+        )
+        self._seek.set_colour(theme.ACCENT)
+        self._volume_slider.set_colour(theme.ACCENT_ALT)
 
     def skip(self, seconds: float) -> None:
         if self._media is None:

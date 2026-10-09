@@ -8,6 +8,8 @@ from PyQt6.QtCore import QByteArray, QRectF, QSize, Qt
 from PyQt6.QtGui import QIcon, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 
+from . import theme
+
 _LINE = 'fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"'
 _STROKE = f'{_LINE} stroke-width="2"'
 _BOLD = f'{_LINE} stroke-width="2.4"'
@@ -48,6 +50,7 @@ _ICONS = {
     "refresh": f'<g {_STROKE}><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.8 3.8v4.6h-4.6"/></g>',
     "folder": f'<g {_STROKE}><path d="M3 7.5a2 2 0 0 1 2-2h4.2l2 2.4H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></g>',
     "check": f'<g {_BOLD}><path d="M5 12.5l4.5 4.5L19 7.5"/></g>',
+    "palette": f'<g {_STROKE}><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.4 0 2-1 1.6-2-.5-1.2.2-2.5 1.6-2.5H17a3.5 3.5 0 0 0 3.5-3.5C20.5 6.9 16.7 3.5 12 3.5z"/></g><g {_FILL}><circle cx="7.8" cy="11.5" r="1.2"/><circle cx="10.5" cy="7.6" r="1.2"/><circle cx="15" cy="7.8" r="1.2"/></g>',
     "more": f'<g {_FILL}><circle cx="12" cy="5.5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="18.5" r="1.7"/></g>',
     "library": f'<g {_STROKE}><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16"/></g>',
     "tv": f'<g {_STROKE}><rect x="2.5" y="7" width="19" height="14" rx="2.5"/><path d="M16.5 2.5L12 7 7.5 2.5"/></g>',
@@ -76,14 +79,21 @@ def pixmap(name: str, size: int = 24, colour: str = "#ffffff", dpr: float = 1.0)
     return result
 
 
-def paint(painter: QPainter, name: str, rect: QRectF, colour: str = "#ffffff") -> None:
+def paint(painter: QPainter, name: str, rect: QRectF, colour: str | None = None) -> None:
     """Draw icon *name* straight into *rect* of an active painter."""
-    _renderer(name, colour).render(painter, rect)
+    _renderer(name, colour or theme.TEXT).render(painter, rect)
+
+
+def icon(name: str, colour: str | None = None, disabled: str | None = None) -> QIcon:
+    """A QIcon with crisp renderings for normal and high-DPI screens.
+
+    Colours default to the active theme's text colours.
+    """
+    return _icon(name, colour or theme.TEXT, disabled or theme.ICON_DISABLED)
 
 
 @lru_cache(maxsize=256)
-def icon(name: str, colour: str = "#ffffff", disabled: str = "#5a5a5a") -> QIcon:
-    """A QIcon with crisp renderings for normal and high-DPI screens."""
+def _icon(name: str, colour: str, disabled: str) -> QIcon:
     result = QIcon()
     for scale in (1.0, 2.0):
         for size in (20, 24, 32):

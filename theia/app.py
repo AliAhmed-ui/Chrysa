@@ -62,6 +62,11 @@ def run_gui(args) -> int:
     for folder in args.add_folder:
         library.add_folder(folder)
 
+    # The saved theme (settings key "ui.theme") must be adopted before anything is painted.
+    theme.manager.bind_storage(
+        load=lambda: library.setting(theme.SETTING_KEY),
+        save=lambda key: library.set_setting(theme.SETTING_KEY, key),
+    )
     theme.apply(app)
     app.setWindowIcon(theme.app_icon())
     window = MainWindow(library)

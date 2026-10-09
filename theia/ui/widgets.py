@@ -310,7 +310,7 @@ class MediaCard(QWidget):
             painter.drawRoundedRect(track, 1.75, 1.75)
             fill = QRectF(track)
             fill.setWidth(max(3.5, track.width() * min(1.0, max(0.0, self.model.progress))))
-            painter.setBrush(QColor(255, 255, 255, 235))
+            painter.setBrush(QColor(theme.ACCENT))  # the playhead
             painter.drawRoundedRect(fill, 1.75, 1.75)
 
         if self.model.badge:
@@ -389,7 +389,7 @@ def paint_shadow(
 
 
 def paint_pill(painter: QPainter, origin: QPointF, text: str, size: int = 11) -> QRectF:
-    """The one badge style: rgba(0,0,0,.65) fill, 1px rgba(255,255,255,.14) rim, #E5E7EB medium text."""
+    """The one badge style: rgba(0,0,0,.65) fill, 1px rgba(255,255,255,.14) rim, soft theme-text medium weight."""
     font = theme.ui_font(size, QFont.Weight.Medium)
     metrics = QFontMetricsF(font)
     rect = QRectF(origin.x(), origin.y(), metrics.horizontalAdvance(text) + 18, metrics.height() + 6)
@@ -399,14 +399,14 @@ def paint_pill(painter: QPainter, origin: QPointF, text: str, size: int = 11) ->
     painter.setBrush(QColor(0, 0, 0, 166))
     painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
     painter.setFont(font)
-    painter.setPen(QColor("#E5E7EB"))
+    painter.setPen(QColor(theme.TEXT_SOFT))
     painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
     painter.restore()
     return rect
 
 
 class PlayButton(QPushButton):
-    """The white Apple-style pill: #FFFFFF, black label, fully rounded, eased hover and press."""
+    """The primary pill: accent fill, contrasting label, fully rounded, eased hover and press."""
 
     def __init__(self, text: str = "", parent: QWidget | None = None, height: int = 40, aura: int = 0) -> None:
         super().__init__(text, parent)
@@ -414,7 +414,7 @@ class PlayButton(QPushButton):
         self._aura = aura  # transparent margin the hover glow is painted into
         self.setObjectName("playButton")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setIcon(icons.icon("play", "#000000", "#00000080"))
+        self.apply_theme()
         self.setIconSize(QSize(15, 15))
         self.setFixedHeight(height + 2 * aura)
         self._hover = 0.0
@@ -441,6 +441,10 @@ class PlayButton(QPushButton):
         self._animate_to(0.0)
         super().leaveEvent(event)
 
+    def apply_theme(self) -> None:
+        self.setIcon(icons.icon("play", theme.ON_ACCENT, theme.ICON_DISABLED))
+        self.update()
+
     def _font(self) -> QFont:
         return theme.ui_font(15 if self._height >= 46 else 14, QFont.Weight.DemiBold)
 
@@ -457,11 +461,13 @@ class PlayButton(QPushButton):
         if self._aura and self._hover > 0.01 and enabled:  # a soft white aura that swells on hover
             painter.setPen(Qt.PenStyle.NoPen)
             for i in range(self._aura, 0, -1):
-                painter.setBrush(QColor(255, 255, 255, round(self._hover * 30 * (1 - i / (self._aura + 1)))))
+                glow = QColor(theme.ACCENT)
+                glow.setAlpha(round(self._hover * 60 * (1 - i / (self._aura + 1))))
+                painter.setBrush(glow)
                 painter.drawRoundedRect(rect.adjusted(-i, -i, i, i), rect.height() / 2 + i, rect.height() / 2 + i)
-        shade = round(255 - 20 * self._hover - (22 if self.isDown() else 0))
+        fill = QColor(theme.ACCENT_PRESSED if self.isDown() else theme.mix(theme.ACCENT, theme.ACCENT_HOVER, self._hover))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(shade, shade, min(255, shade + 3)) if enabled else QColor(255, 255, 255, 51))
+        painter.setBrush(fill if enabled else QColor(theme.BORDER))
         painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
 
         font = self._font()
@@ -473,7 +479,7 @@ class PlayButton(QPushButton):
         if side:
             mode = QIcon.Mode.Normal if enabled else QIcon.Mode.Disabled
             self.icon().paint(painter, QRectF(x, rect.top() + (rect.height() - side) / 2, side, side).toRect(), mode=mode)
-        painter.setPen(QColor("#000000") if enabled else QColor(255, 255, 255, 128))
+        painter.setPen(QColor(theme.ON_ACCENT) if enabled else QColor(theme.TEXT_MUTED))
         painter.drawText(
             QRectF(x + side + gap, rect.top(), text_width + 2, rect.height()), Qt.AlignmentFlag.AlignVCenter, self.text()
         )
@@ -503,18 +509,18 @@ class BrandLabel(QWidget):
         font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 6)
         painter.setFont(font)
         sheen = QLinearGradient(0, 0, 0, self.height())
-        sheen.setColorAt(0.0, QColor("#ffffff"))
-        sheen.setColorAt(1.0, QColor("#a3a6b0"))
+        sheen.setColorAt(0.0, QColor(theme.TEXT))
+        sheen.setColorAt(1.0, QColor(theme.TEXT_DIM))
         painter.setPen(QPen(QBrush(sheen), 1))
         painter.drawText(self.rect().adjusted(8, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._text)
         painter.end()
 
 
 def paint_placeholder(painter: QPainter, rect: QRectF, title: str) -> None:
-    """Stand-in artwork: a neutral graphite gradient with a film glyph."""
+    """Stand-in artwork: a gradient of the theme's surface tones with a film glyph."""
     gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
-    gradient.setColorAt(0.0, QColor("#2A2D33"))
-    gradient.setColorAt(1.0, QColor("#15171B"))
+    gradient.setColorAt(0.0, QColor(theme.SURFACE_HOVER))
+    gradient.setColorAt(1.0, QColor(theme.SURFACE))
     painter.fillRect(rect, gradient)
     side = min(rect.width(), rect.height()) * 0.3
     glyph = QRectF(rect.center().x() - side / 2, rect.top() + rect.height() * 0.42 - side / 2, side, side)
@@ -603,13 +609,15 @@ class CardRow(QWidget):
         button.setIconSize(QSize(18, 18))
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setStyleSheet(
-            "QToolButton { background: rgba(0, 0, 0, 0.65); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 12px; }"
-            "QToolButton:hover { background: rgba(40, 42, 48, 0.9); }"
-        )
+        button.setObjectName("rowArrow")
+        button.setProperty("iconName", icon_name)
         button.clicked.connect(lambda: self._scroller.glide(direction * self._page()))
         button.hide()
         return button
+
+    def apply_theme(self) -> None:
+        for button in (self._left, self._right):
+            button.setIcon(icons.icon(button.property("iconName")))
 
     def _page(self) -> int:
         """Scroll distance for one arrow click: whole cards, most of the viewport."""
