@@ -120,6 +120,7 @@ class Sidebar(QWidget):
     searchChanged = pyqtSignal(str)
     rescanRequested = pyqtSignal()
     subtitlesRequested = pyqtSignal()
+    logLocationRequested = pyqtSignal()
     addFolderRequested = pyqtSignal()
     menuRequested = pyqtSignal(QPoint)
     themeRequested = pyqtSignal()
@@ -172,6 +173,12 @@ class Sidebar(QWidget):
         )
         self.fetch_subtitles.clicked.connect(self.subtitlesRequested)
         layout.addWidget(self.fetch_subtitles)
+        self.log_location = self._action(
+            "folder", "Change log location",
+            "Choose the folder where Theia keeps your watch log (what you were watching and where you stopped)",
+        )
+        self.log_location.clicked.connect(self.logLocationRequested)
+        layout.addWidget(self.log_location)
         layout.addStretch(1)
 
         self.activity = ActivityLog()
@@ -283,6 +290,7 @@ class MainWindow(QMainWindow):
         self.top_bar.rescanRequested.connect(lambda: self.rescan(manual=True))
         self.top_bar.addFolderRequested.connect(self.add_folder)
         self.top_bar.subtitlesRequested.connect(self.fetch_subtitles)
+        self.top_bar.logLocationRequested.connect(self.change_log_location)
         self.top_bar.menuRequested.connect(self._show_more_menu)
         self.top_bar.themeRequested.connect(self.change_theme)
         theme.manager.subscribe(self._on_theme_changed)
@@ -579,6 +587,52 @@ class MainWindow(QMainWindow):
             worker.deleteLater()
         self.top_bar.fetch_subtitles.setEnabled(True)
         self.top_bar.fetch_subtitles.setText("Fetch Subtitles")
+
+    def ask_log_location_if_needed(self) -> None:
+        """First launch after installing: ask where the watch log should live."""
+        if self.library.watch_log_dir() is not None:
+            return
+        default = str(self.library.paths.data_dir)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Where should Theia keep your watch log?")
+        box.setText("<b>Where should Theia keep your watch log?</b>")
+        box.setInformativeText(
+            "The log records which movie you stopped in and which episode of which season you "
+            "left off at, for Continue Watching.\n\n"
+            "Pick a folder both systems can read (for example a shared data partition) and "
+            "Theia will keep your progress in sync between them automatically.\n\n"
+            f"If you skip this, the log is kept in {default}. You can change it any time with "
+            "Change log location."
+        )
+        choose = box.addButton("Choose Folder…", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Use Default", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(choose)
+        box.exec()
+        if box.clickedButton() is choose and self._pick_log_location(str(self.library.paths.data_dir)):
+            return
+        ok, message = self.library.set_watch_log_dir(default)
+        self._after_log_change(ok, message)
+
+    def change_log_location(self) -> None:
+        self._pick_log_location(self.library.watch_log_dir() or str(self.library.paths.data_dir))
+
+    def _pick_log_location(self, start: str) -> bool:
+        """Let the user choose the log folder; True if one was chosen and accepted."""
+        chosen = QFileDialog.getExistingDirectory(self, "Choose the folder for the Theia watch log", start)
+        if not chosen:
+            return False
+        ok, message = self.library.set_watch_log_dir(chosen)
+        self._after_log_change(ok, message)
+        return ok
+
+    def _after_log_change(self, ok: bool, message: str) -> None:
+        if not ok:
+            QMessageBox.warning(self, "Watch log", message)
+            return
+        self.sidebar.activity.log("info", f"Watch log: {message}")
+        self._set_status("Watch log location updated", 6000)
+        self.reload()  # progress from the log may have changed what is in Continue Watching
 
     def add_folder(self) -> None:
         """Pick a folder (e.g. on a USB drive), add it to the library and scan it."""

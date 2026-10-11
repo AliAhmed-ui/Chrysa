@@ -35,6 +35,12 @@ same path and start in a fraction of a second.
 - **Resume everywhere** — the position is written to SQLite every 3 seconds and
   immediately on pause or exit. Opening a partly watched item continues from that
   spot (*Start Over* is in the player and the right-click menu).
+- **Watch log that follows you between systems** — on first launch Theia asks where to
+  keep `theia-watch-log.json`, a small file recording which movie you stopped in and
+  which episode of which season you left off at. Point both systems of a dual boot at
+  the same folder and progress is merged silently at start-up and after every scan
+  (newest wins; entries are matched by title and season/episode, not file path).
+  *Change log location* in the sidebar moves it.
 - **Offline thumbnails** — a `poster.jpg` / `cover.jpg` / `folder.jpg` next to a video
   is used if present; otherwise ffmpeg grabs a frame 15 % into the file (retrying
   further in if that frame is black) and caches it.

@@ -67,6 +67,10 @@ def run_gui(args) -> int:
         load=lambda: library.setting(theme.SETTING_KEY),
         save=lambda key: library.set_setting(theme.SETTING_KEY, key),
     )
+    try:
+        library.sync_watch_log()  # silently pick up progress made on another system
+    except Exception:
+        pass
     theme.apply(app)
     app.setWindowIcon(theme.app_icon())
     window = MainWindow(library)
@@ -93,6 +97,7 @@ def run_gui(args) -> int:
     heartbeat.start(300)
 
     window.show()
+    QTimer.singleShot(0, window.ask_log_location_if_needed)
     code = app.exec()
     server.close()
     lock.unlock()

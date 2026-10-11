@@ -18,6 +18,9 @@ from .database import Database
 from .models import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Folder, Media, NextUp, ScanSummary, Show
 from .probe import MediaInfo, probe_many
 from .scanner import ScannedVideo, Scanner, ScanResult
+from .watchlog import WatchLog, describe, identity
+
+WATCH_LOG_SETTING = "watchlog.dir"
 
 THUMB_PENDING, THUMB_READY, THUMB_FAILED = 0, 1, 2
 
@@ -47,6 +50,10 @@ class Library:
         self.paths = paths
         self._scan_lock = threading.Lock()
         self._name_cache_loaded = False
+        self._log: WatchLog | None = None
+        self._log_lock = threading.RLock()
+        self._log_media: dict[int, Media] = {}  # media id -> row, for naming log entries cheaply
+        self.watch_log_error: str | None = None  # why the last write to the log failed, if it did
 
     @classmethod
     def open(cls, paths: Paths) -> Library:
@@ -173,6 +180,11 @@ class Library:
             summary.missing_roots = result.missing_roots
             summary.seconds = time.time() - started
             self.prune_thumbnails()
+            self._log_media.clear()
+            try:
+                self.sync_watch_log()  # pick up progress made on another system
+            except Exception:  # never let a damaged log break a scan
+                pass
             return summary
 
     def _plan(self, result: ScanResult, folders: list[Folder], retry_failed: bool) -> _SyncPlan:
@@ -403,6 +415,7 @@ class Library:
 
     def save_progress(self, media_id: int, position: float, duration: float) -> None:
         """Remember where playback of *media_id* stands (called every few seconds)."""
+        now = time.time()
         try:
             self.db.connection().execute(
                 """
@@ -415,10 +428,12 @@ class Library:
                                             ELSE playback.duration_seconds END,
                     last_watched = excluded.last_watched
                 """,
-                (media_id, max(0.0, position), max(0.0, duration), time.time()),
+                (media_id, max(0.0, position), max(0.0, duration), now),
             )
         except sqlite3.IntegrityError:
-            pass  # the file was removed from the library while it was playing
+            return  # the file was removed from the library while it was playing
+        if position > 0:
+            self._log_progress(media_id, position, duration, now)
 
     def save_tracks(
         self, media_id: int, audio_track: int | None, subtitle_track: int | None, subtitle_file: str | None
@@ -442,6 +457,7 @@ class Library:
     def clear_progress(self, media_id: int) -> None:
         """Mark as unwatched: forget the saved position entirely."""
         self.db.connection().execute("DELETE FROM playback WHERE media_id = ?", (media_id,))
+        self._log_progress(media_id, 0.0, 0.0, time.time())  # a zero entry tells other systems it was reset
 
     def mark_watched(self, media_id: int) -> None:
         media = self.media(media_id)
@@ -449,6 +465,106 @@ class Library:
             return
         duration = media.total_duration or 1.0
         self.save_progress(media_id, duration, duration)
+
+    # ----------------------------------------------------------- watch log
+
+    def watch_log_dir(self) -> str | None:
+        """The folder holding the watch log, or None until the user has chosen one."""
+        return self.setting(WATCH_LOG_SETTING)
+
+    def _watch_log(self) -> WatchLog | None:
+        with self._log_lock:
+            directory = self.watch_log_dir()
+            if not directory:
+                return None
+            if self._log is None or str(self._log.directory) != directory:
+                self._log = WatchLog(directory)
+            return self._log
+
+    def _log_progress(self, media_id: int, position: float, duration: float, now: float) -> None:
+        log = self._watch_log()
+        if log is None:
+            return
+        media = self._log_media.get(media_id)
+        if media is None:
+            media = self.media(media_id)
+            if media is None:
+                return
+            self._log_media[media_id] = media
+        log.put(identity(media), describe(media, position, duration, now))
+        self._write_log(log)
+
+    def _write_log(self, log: WatchLog) -> None:
+        try:
+            log.save()
+            self.watch_log_error = None
+        except OSError as error:
+            self.watch_log_error = str(error)
+
+    def set_watch_log_dir(self, directory: str | os.PathLike) -> tuple[bool, str]:
+        """Move the log to *directory*, merging what is there with what we know.
+
+        The old file is left where it was. Returns ``(ok, message)``.
+        """
+        with self._log_lock:
+            fresh = WatchLog(directory)
+            if self._watch_log() is not None:
+                fresh.merge(self._watch_log().entries)
+            try:
+                fresh.save()
+            except OSError as error:
+                return False, f"Theia cannot write to that folder: {error.strerror or error}"
+            self.set_setting(WATCH_LOG_SETTING, str(fresh.directory))
+            self._log = fresh
+        self.sync_watch_log()
+        return True, str(fresh.path)
+
+    def sync_watch_log(self) -> int:
+        """Two-way merge between the log file and the library; returns how many items changed here.
+
+        Newer progress in the log replaces older progress in the database, and
+        newer local progress is written into the log. Matching is by title and
+        season/episode, so it works whatever the file paths are on each system.
+        """
+        log = self._watch_log()
+        if log is None:
+            return 0
+        with self._log_lock:
+            log.load()
+            con = self.db.connection()
+            applied, pushed = 0, False
+            for media in self._media():
+                key = identity(media)
+                entry = log.get(key)
+                local = media.last_watched or 0.0
+                remote = float(entry["updated"]) if entry else 0.0
+                if entry is not None and remote > local + 0.01:
+                    position = float(entry.get("position") or 0.0)
+                    if position <= 0:
+                        if media.last_watched is not None:
+                            con.execute("DELETE FROM playback WHERE media_id = ?", (media.id,))
+                            applied += 1
+                        continue
+                    con.execute(
+                        """
+                        INSERT INTO playback (media_id, position_seconds, duration_seconds, last_watched)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(media_id) DO UPDATE SET
+                            position_seconds = excluded.position_seconds,
+                            duration_seconds = CASE WHEN excluded.duration_seconds > 0
+                                                    THEN excluded.duration_seconds
+                                                    ELSE playback.duration_seconds END,
+                            last_watched = excluded.last_watched
+                        """,
+                        (media.id, position, float(entry.get("duration") or 0.0), remote),
+                    )
+                    applied += 1
+                elif media.position > 0 and local > remote + 0.01:
+                    log.put(key, describe(media, media.position, media.total_duration, local))
+                    pushed = True
+            if pushed:
+                self._write_log(log)
+        return applied
 
     def next_episode(self, media: Media) -> Media | None:
         """The episode that follows *media* in its show, if any."""
