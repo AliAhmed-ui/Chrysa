@@ -368,18 +368,20 @@ class Library:
         return sorted((r["season"] for r in rows), key=lambda s: (s <= 0, -s if s <= 0 else s))
 
     def continue_watching(self, limit: int = 40) -> list[Media]:
-        """Partially watched movies and episodes, most recently watched first.
+        """Where you left off, most recently watched first.
 
-        A show appears once, as its most recently watched unfinished episode, so
-        switching episodes moves the show's card along instead of adding another.
+        A show appears once, as the episode watched most recently, however far
+        through it you got and whatever older episodes are still unfinished.
+        Movies appear while partially watched.
         """
-        started = self._media("WHERE p.position_seconds > 0", order="ORDER BY p.last_watched DESC")
         listed, shows = [], set()
-        for media in started:
-            if not media.in_progress or media.show_id in shows:
-                continue
+        for media in self._media("WHERE p.position_seconds > 0", order="ORDER BY p.last_watched DESC"):
             if media.show_id is not None:
+                if media.show_id in shows:
+                    continue
                 shows.add(media.show_id)
+            elif not media.in_progress:
+                continue
             listed.append(media)
         return listed[:limit]
 

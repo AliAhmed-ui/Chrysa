@@ -98,7 +98,7 @@ def show_card(show: Show, poster: bool = False) -> CardModel:
 
 def continue_card(media: Media) -> CardModel:
     """Card for the *Continue Watching* row: always shows progress and time left."""
-    left = f"{format_duration(media.remaining)} left"
+    left = "Watched" if media.is_finished else f"{format_duration(media.remaining)} left"
     subtitle = f"{media.episode_code} · {left}" if media.is_episode else left
     return CardModel(media, media.heading, subtitle, media.image, media.fraction, False, media.id, media.episode_code)
 

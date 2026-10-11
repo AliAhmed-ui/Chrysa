@@ -280,8 +280,16 @@ class Playback(LibraryCase):
         self.watch(self.episodes[0], 0.30, when=1000)
         self.watch(self.episodes[3], 0.60, when=2000)
         self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[3].id])
-        self.watch(self.episodes[3], 1.0, when=3000)  # finishing it falls back to the other unfinished one
-        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[0].id])
+        self.watch(self.episodes[3], 1.0, when=3000)  # finished, but still the latest one watched
+        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[3].id])
+
+    def test_continue_watching_shows_latest_episode_despite_older_unfinished_one(self):
+        self.watch(self.episodes[0], 0.49, when=1000)
+        for offset, episode in enumerate(self.episodes[1:4]):
+            self.watch(episode, 0.97, when=2000 + offset)
+        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[3].id])
+        self.watch(self.episodes[4], 0.01, when=3000)
+        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[4].id])
 
     def test_clear_progress_and_mark_watched(self):
         heat = self.by_title("Heat")

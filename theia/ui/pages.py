@@ -424,7 +424,7 @@ class HomePage(SmoothScrollArea):
             seen.add(("media", media.id))
             if media.show_id is not None:
                 seen.add(("show", media.show_id))
-            left = f"{format_duration(media.remaining)} left"
+            left = "Watched" if media.is_finished else f"{format_duration(media.remaining)} left"
             meta = "  ·  ".join(
                 p for p in ((media.episode_code, media.title, left) if media.is_episode else ("Movie", str(media.year or ""), left)) if p
             )
