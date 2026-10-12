@@ -38,6 +38,15 @@ from .services import ScanWorker, SubtitleWorker, ThumbnailService
 from .widgets import BrandLabel, CardModel, MediaCard, movie_card, show_card
 
 
+def _removable_media_root() -> str | None:
+    """Where this system mounts SD cards and USB sticks, so the folder picker opens there."""
+    user = os.environ.get("USER") or os.path.basename(os.path.expanduser("~"))
+    for root in (f"/run/media/{user}", f"/media/{user}", "/media"):
+        if os.path.isdir(root):
+            return root
+    return None
+
+
 class ElidedLabel(QLabel):
     """A label that shortens its text to whatever width it is given."""
 
@@ -590,7 +599,12 @@ class MainWindow(QMainWindow):
 
     def ask_log_location_if_needed(self) -> None:
         """First launch after installing: ask where the watch log should live."""
-        if self.library.watch_log_dir() is not None:
+        current = self.library.watch_log_dir()
+        if current is not None:
+            if not os.path.isdir(current):  # e.g. the SD card is not in this machine
+                message = f"Watch log folder not available: {current}. Progress is kept here until it returns."
+                self.sidebar.activity.log("WARN", message)
+                self._set_status(message, 12000)
             return
         default = str(self.library.paths.data_dir)
         box = QMessageBox(self)
@@ -609,7 +623,7 @@ class MainWindow(QMainWindow):
         box.addButton("Use Default", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(choose)
         box.exec()
-        if box.clickedButton() is choose and self._pick_log_location(str(self.library.paths.data_dir)):
+        if box.clickedButton() is choose and self._pick_log_location(_removable_media_root() or default):
             return
         ok, message = self.library.set_watch_log_dir(default)
         self._after_log_change(ok, message)

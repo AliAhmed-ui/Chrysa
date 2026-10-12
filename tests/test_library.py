@@ -6,7 +6,7 @@ import time
 import unittest
 
 from tests.helpers import MB, LibraryCase, make_tree
-from theia.config import FINISHED_FRACTION, RESUME_MIN_FRACTION
+from theia.config import FINISHED_FRACTION, MIN_PLAYED_SECONDS
 from theia.library import THUMB_FAILED, THUMB_PENDING, THUMB_READY, final_kind, next_up
 from theia.models import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Media, format_clock, format_duration
 from theia.scanner import ScannedVideo
@@ -63,6 +63,7 @@ class Sync(LibraryCase):
         self.library.save_progress(self.library.movies()[0].id, 100, 1000)
         shutil.rmtree(self.media / "Friends")
         os.unlink(self.media / "Heat (1995) [1080p]/Heat.1995.1080p.mp4")
+        make_tree(self.media, {"notes.txt": b"x"})  # (a wholly empty folder would look like an unmounted drive)
         summary = self.scan()
         self.assertEqual(summary.removed, 2)
         self.assertEqual((self.library.movies(), self.library.shows()), ([], []))
@@ -196,6 +197,28 @@ class Folders(LibraryCase):
         self.library.remove_folder(folder.id)
         self.assertEqual((self.library.movies(), self.library.shows(), self.library.folders()), ([], [], []))
 
+    def test_an_emptied_folder_is_kept_as_offline_not_wiped(self):
+        make_tree(self.media, {"Heat (1995) [1080p]/Heat.1995.1080p.mp4": GB})
+        self.scan()
+        heat = self.library.movies()[0]
+        self.library.save_progress(heat.id, 500.0, 1000.0)
+        shutil.rmtree(self.media / "Heat (1995) [1080p]")  # an unmounted drive leaves an empty folder
+        summary = self.scan()
+        self.assertEqual(summary.removed, 0)
+        self.assertEqual(summary.missing_roots, [str(self.media)])
+        self.assertEqual(self.library.media(heat.id).position, 500.0)
+
+    def test_replaced_file_forgets_a_position_from_the_old_one(self):
+        make_tree(self.media, {"Heat (1995) [1080p]/Heat.1995.1080p.mp4": GB})
+        self.durations["Heat.1995.1080p.mp4"] = 1000.0
+        self.scan()
+        heat = self.library.movies()[0]
+        self.library.save_progress(heat.id, 500.0, 1000.0)
+        make_tree(self.media, {"Heat (1995) [1080p]/Heat.1995.1080p.mp4": GB + 4096})
+        self.durations["Heat.1995.1080p.mp4"] = 6000.0
+        self.scan()
+        self.assertEqual(self.library.media(heat.id).position, 0.0)
+
     def test_default_folder_is_added_only_once(self):
         self.library.ensure_default_folder()
         count = len(self.library.folders())
@@ -247,12 +270,13 @@ class Playback(LibraryCase):
         self.assertEqual((saved.position, saved.played_duration), (200, 5000))
 
     def test_thresholds(self):
-        self.assertEqual((RESUME_MIN_FRACTION, FINISHED_FRACTION), (0.02, 0.92))
+        self.assertEqual((MIN_PLAYED_SECONDS, FINISHED_FRACTION), (5, 0.92))
         heat = self.by_title("Heat")
         for fraction, in_progress, finished, resume in [
             (0.0, False, False, 0.0),
-            (0.019, False, False, 0.0),
-            (0.02, True, False, 20.0),
+            (0.004, False, False, 0.0),  # 4 s of 1000: under the minimum
+            (0.005, True, False, 5.0),   # 5 s: resumes at exactly that second
+            (0.019, True, False, 19.0),
             (0.5, True, False, 500.0),
             (0.92, True, False, 920.0),
             (0.921, False, True, 0.0),
@@ -267,7 +291,7 @@ class Playback(LibraryCase):
     def test_continue_watching_lists_partial_items_most_recent_first(self):
         heat, tenet, enemy = (self.by_title(t) for t in ("Heat", "Tenet", "Enemy"))
         self.watch(heat, 0.40, when=1000)
-        self.watch(tenet, 0.01, when=4000)   # barely started: not listed
+        self.watch(tenet, 0.004, when=4000)  # under 5 s: not listed
         self.watch(enemy, 0.97, when=5000)   # finished: not listed
         self.watch(self.episodes[1], 0.50, when=3000)
         self.watch(self.episodes[4], 0.92, when=2000)
@@ -280,16 +304,38 @@ class Playback(LibraryCase):
         self.watch(self.episodes[0], 0.30, when=1000)
         self.watch(self.episodes[3], 0.60, when=2000)
         self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[3].id])
-        self.watch(self.episodes[3], 1.0, when=3000)  # finished, but still the latest one watched
-        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[3].id])
+        self.watch(self.episodes[3], 1.0, when=3000)  # finished: the card moves on to the next episode
+        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[4].id])
+        self.assertEqual(self.library.continue_watching()[0].resume_position, 0.0)
+
+    def test_finished_last_episode_leaves_continue_watching(self):
+        self.watch(self.episodes[-1], 1.0, when=1000)
+        self.assertEqual(self.library.continue_watching(), [])
 
     def test_continue_watching_shows_latest_episode_despite_older_unfinished_one(self):
         self.watch(self.episodes[0], 0.49, when=1000)
         for offset, episode in enumerate(self.episodes[1:4]):
             self.watch(episode, 0.97, when=2000 + offset)
-        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[3].id])
-        self.watch(self.episodes[4], 0.01, when=3000)
         self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[4].id])
+        self.watch(self.episodes[4], 0.05, when=3000)
+        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[4].id])
+
+    def test_skipping_through_episodes_does_not_move_continue_watching(self):
+        self.watch(self.episodes[1], 0.55, when=1000)
+        for episode in self.episodes[2:5]:  # a few seconds each, then Next
+            self.library.save_progress(episode.id, 3.0, 1000.0)
+        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[1].id])
+        self.assertEqual(self.library.media(self.episodes[2].id).last_watched, None)
+        self.library.save_progress(self.episodes[1].id, 2.0, 1000.0)  # restarted and left at once
+        self.assertEqual(self.library.media(self.episodes[1].id).position, 550.0)
+
+    def test_barely_started_rows_from_older_versions_are_ignored(self):
+        self.watch(self.episodes[1], 0.55, when=1000)
+        self.library.db.connection().execute(
+            "INSERT INTO playback (media_id, position_seconds, duration_seconds, last_watched) VALUES (?, 3, 1000, 2000)",
+            (self.episodes[2].id,),
+        )
+        self.assertEqual([m.id for m in self.library.continue_watching()], [self.episodes[1].id])
 
     def test_clear_progress_and_mark_watched(self):
         heat = self.by_title("Heat")
@@ -302,11 +348,11 @@ class Playback(LibraryCase):
     def test_track_choices_are_remembered_per_file(self):
         heat = self.by_title("Heat")
         self.library.save_tracks(heat.id, 2, -1, None)
-        self.library.save_progress(heat.id, 10, 1000)
+        self.library.save_progress(heat.id, 100, 1000)
         self.library.save_tracks(heat.id, 2, None, "/subs/English.srt")
         saved = self.library.media(heat.id)
         self.assertEqual((saved.audio_track, saved.subtitle_track, saved.subtitle_file, saved.position),
-                         (2, None, "/subs/English.srt", 10))
+                         (2, None, "/subs/English.srt", 100))
 
     def test_progress_for_a_vanished_file_is_ignored(self):
         self.library.save_progress(987654, 10, 100)
@@ -366,9 +412,21 @@ class Playback(LibraryCase):
         self.assertEqual(self.up(), ("S1:E1", "restart", 0.0))
         self.assertEqual(self.library.next_up(self.show.id).label, "Watch Again")
 
-    def test_barely_started_episode_restarts_from_zero(self):
-        self.watch(self.episodes[3], 0.01, when=100)
-        self.assertEqual(self.up(), ("S2:E1", "start", 0.0))
+    def test_track_choices_alone_do_not_make_an_episode_the_last_watched(self):
+        self.watch(self.episodes[1], 0.5, when=1000)
+        self.library.save_tracks(self.episodes[3].id, 1, -1, None)  # opened, picked a track, left
+        self.assertEqual(self.up(), ("S1:E2", "resume", 500.0))
+
+    def test_a_few_seconds_of_a_later_episode_still_make_it_the_last_watched(self):
+        self.watch(self.episodes[1], 0.5, when=1000)
+        self.library.save_progress(self.episodes[3].id, 10, 1000)  # skipped ahead, watched 10 s
+        self.assertEqual(self.up(), ("S2:E1", "resume", 10.0))
+        self.assertEqual(self.library.continue_watching()[0].id, self.episodes[3].id)
+
+    def test_a_glance_under_the_minimum_is_not_saved(self):
+        self.watch(self.episodes[1], 0.5, when=1000)
+        self.library.save_progress(self.episodes[3].id, 2, 1000)
+        self.assertEqual(self.up(), ("S1:E2", "resume", 500.0))
 
     def test_next_up_of_empty_list(self):
         self.assertIsNone(next_up([]))

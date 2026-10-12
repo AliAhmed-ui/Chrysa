@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from .config import FINISHED_FRACTION, RESUME_MIN_FRACTION
+from .config import FINISHED_FRACTION, MIN_PLAYED_SECONDS
 
 KIND_MOVIE = "movie"
 KIND_EPISODE = "episode"
@@ -61,7 +61,7 @@ class Media:
     @property
     def in_progress(self) -> bool:
         """Partially watched: belongs in *Continue Watching* and offers *Resume*."""
-        return RESUME_MIN_FRACTION <= self.fraction <= FINISHED_FRACTION
+        return self.position >= MIN_PLAYED_SECONDS and self.fraction <= FINISHED_FRACTION
 
     @property
     def resume_position(self) -> float:
@@ -187,6 +187,7 @@ class ScanSummary:
     moved: int = 0
     updated: int = 0  # rows whose title, kind, artwork… changed
     probed: int = 0
+    synced: int = 0  # items whose progress was taken over from the watch log
     ignored: list[tuple[str, str]] | None = None
     missing_roots: list[str] | None = None
     cancelled: bool = False
@@ -199,7 +200,7 @@ class ScanSummary:
     @property
     def changed(self) -> bool:
         """Whether the scan altered anything the UI shows."""
-        return bool(self.added or self.removed or self.moved or self.updated)
+        return bool(self.added or self.removed or self.moved or self.updated or self.synced)
 
     def describe(self) -> str:
         if self.cancelled:

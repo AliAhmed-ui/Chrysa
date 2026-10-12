@@ -428,7 +428,7 @@ class HomePage(SmoothScrollArea):
             meta = "  ·  ".join(
                 p for p in ((media.episode_code, media.title, left) if media.is_episode else ("Movie", str(media.year or ""), left)) if p
             )
-            items.append(HeroItem(media, "Continue Watching", media.heading, meta, media.image, "Resume", thumb_media_id=media.id))
+            items.append(HeroItem(media, "Continue Watching", media.heading, meta, media.image, "Resume" if media.in_progress else "Play", thumb_media_id=media.id))
         for payload in recent:
             if len(items) >= self.HERO_SLIDES:
                 break

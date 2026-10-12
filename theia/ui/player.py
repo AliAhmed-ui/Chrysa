@@ -498,7 +498,7 @@ class PlayerPage(QWidget):
         return time_ms / 1000.0 if time_ms is not None and time_ms >= 0 else -1.0
 
     def _save_progress(self) -> None:
-        """Write position and duration to the database (every 3 s, on pause, on exit)."""
+        """Write position and duration to the database (every second, on pause, on exit)."""
         if self._media is None or not self._position_valid:
             return
         position = self._position()

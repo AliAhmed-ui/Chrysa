@@ -109,7 +109,7 @@ class Database:
             con.row_factory = sqlite3.Row
             con.execute("PRAGMA foreign_keys = ON")
             con.execute("PRAGMA journal_mode = WAL")
-            con.execute("PRAGMA synchronous = NORMAL")
+            con.execute("PRAGMA synchronous = FULL")
             con.execute("PRAGMA busy_timeout = 30000")
             self._local.con = con
         return con

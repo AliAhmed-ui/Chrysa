@@ -10,9 +10,9 @@ APP_NAME = "Theia"
 APP_ID = "theia"  # desktop-file id / X11 instance name
 
 # --- playback thresholds -------------------------------------------------
-RESUME_MIN_FRACTION = 0.02  # below this an item counts as "not started"
+MIN_PLAYED_SECONDS = 5  # less than this is a glance, not watching: not remembered
 FINISHED_FRACTION = 0.92  # above this an item counts as "watched"
-SAVE_INTERVAL_MS = 3000  # how often the playback position is persisted
+SAVE_INTERVAL_MS = 1000  # how often the playback position is persisted
 SKIP_SECONDS = 10  # Left / Right arrow jump
 
 # --- thumbnails ----------------------------------------------------------

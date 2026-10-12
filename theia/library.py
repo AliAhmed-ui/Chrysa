@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Iterable
 
 from . import naming
-from .config import FEATURE_LENGTH_SECONDS, SHORT_CLIP_SECONDS, Paths, default_media_dir
+from .config import FEATURE_LENGTH_SECONDS, MIN_PLAYED_SECONDS, SHORT_CLIP_SECONDS, Paths, default_media_dir
 from .database import Database
 from .models import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Folder, Media, NextUp, ScanSummary, Show
 from .probe import MediaInfo, probe_many
@@ -21,6 +21,7 @@ from .scanner import ScannedVideo, Scanner, ScanResult
 from .watchlog import WatchLog, describe, identity
 
 WATCH_LOG_SETTING = "watchlog.dir"
+LOG_WRITE_INTERVAL = 5.0  # seconds between watch-log file writes while playing (the database is saved every second)
 
 THUMB_PENDING, THUMB_READY, THUMB_FAILED = 0, 1, 2
 
@@ -52,6 +53,7 @@ class Library:
         self._name_cache_loaded = False
         self._log: WatchLog | None = None
         self._log_lock = threading.RLock()
+        self._log_written: dict[int, float] = {}  # media id -> when its log entry was last written
         self._log_media: dict[int, Media] = {}  # media id -> row, for naming log entries cheaply
         self.watch_log_error: str | None = None  # why the last write to the log failed, if it did
 
@@ -182,7 +184,7 @@ class Library:
             self.prune_thumbnails()
             self._log_media.clear()
             try:
-                self.sync_watch_log()  # pick up progress made on another system
+                summary.synced = self.sync_watch_log()  # pick up progress made on another system
             except Exception:  # never let a damaged log break a scan
                 pass
             return summary
@@ -190,8 +192,20 @@ class Library:
     def _plan(self, result: ScanResult, folders: list[Folder], retry_failed: bool) -> _SyncPlan:
         """Diff the scan against the database: what is new, gone, moved, or needs probing."""
         folder_ids = {folder.path: folder.id for folder in folders}
-        online = [folder_ids[root] for root in result.scanned_roots if root in folder_ids]
         con = self.db.connection()
+        populated = {video.root for video in result.videos}
+        online = []
+        for root in result.scanned_roots:
+            if root not in folder_ids:
+                continue
+            if root not in populated and _is_empty_dir(root) and con.execute(
+                "SELECT 1 FROM media WHERE folder_id = ? LIMIT 1", (folder_ids[root],)
+            ).fetchone():
+                # A completely empty folder where there used to be videos is most likely an
+                # unmounted drive's mount point. Keep its library and watch history.
+                result.missing_roots.append(root)
+                continue
+            online.append(folder_ids[root])
         marks = ",".join("?" * len(online))
         existing = (
             {row["path"]: row for row in con.execute(f"SELECT * FROM media WHERE folder_id IN ({marks})", online)}
@@ -254,6 +268,14 @@ class Library:
                 if _changed(row, video):
                     # Same path, different file: the old frame grab no longer applies.
                     values.update(thumb_path=None, thumb_state=THUMB_PENDING)
+                    if info is not None and info.duration > 0:
+                        # A position saved against a different running time points nowhere useful.
+                        con.execute(
+                            "UPDATE playback SET position_seconds = 0, duration_seconds = 0 "
+                            "WHERE media_id = ? AND duration_seconds > 0 "
+                            "AND ABS(duration_seconds - ?) > MAX(5.0, duration_seconds * 0.02)",
+                            (row["id"], info.duration),
+                        )
                 elif retry_failed and row["thumb_state"] == THUMB_FAILED:
                     values["thumb_state"] = THUMB_PENDING
                 changes = {k: v for k, v in values.items() if row[k] != v}
@@ -370,16 +392,24 @@ class Library:
     def continue_watching(self, limit: int = 40) -> list[Media]:
         """Where you left off, most recently watched first.
 
-        A show appears once, as the episode watched most recently, however far
-        through it you got and whatever older episodes are still unfinished.
-        Movies appear while partially watched.
+        A show appears once, anchored on the episode watched most recently,
+        whatever older episodes are still unfinished. If that episode is
+        finished the card moves on to the episode after it (a finished last
+        episode drops off), so Continue never restarts something you completed.
+        Movies appear while partially watched. Files played for only a few seconds are ignored.
         """
         listed, shows = [], set()
         for media in self._media("WHERE p.position_seconds > 0", order="ORDER BY p.last_watched DESC"):
+            if media.position < MIN_PLAYED_SECONDS:
+                continue
             if media.show_id is not None:
                 if media.show_id in shows:
                     continue
                 shows.add(media.show_id)
+                if media.is_finished:
+                    media = self.next_episode(media)
+                    if media is None:
+                        continue
             elif not media.in_progress:
                 continue
             listed.append(media)
@@ -416,7 +446,14 @@ class Library:
     # ------------------------------------------------------------ playback
 
     def save_progress(self, media_id: int, position: float, duration: float) -> None:
-        """Remember where playback of *media_id* stands (called every few seconds)."""
+        """Remember where playback of *media_id* stands (called every few seconds).
+
+        Under a few seconds (opening a file by mistake) is not watching and is not
+        saved; anything more counts, so the episode you opened last is the one
+        Continue Watching offers.
+        """
+        if position < MIN_PLAYED_SECONDS:
+            return
         now = time.time()
         try:
             self.db.connection().execute(
@@ -434,7 +471,8 @@ class Library:
             )
         except sqlite3.IntegrityError:
             return  # the file was removed from the library while it was playing
-        if position > 0:
+        if position > 0 and now - self._log_written.get(media_id, 0.0) >= LOG_WRITE_INTERVAL:
+            self._log_written[media_id] = now
             self._log_progress(media_id, position, duration, now)
 
     def save_tracks(
@@ -509,7 +547,8 @@ class Library:
         The old file is left where it was. Returns ``(ok, message)``.
         """
         with self._log_lock:
-            fresh = WatchLog(directory)
+            fresh = WatchLog(directory)  # reads the log already in that folder, if there is one
+            found = len(fresh.entries) if fresh.path.is_file() else None
             if self._watch_log() is not None:
                 fresh.merge(self._watch_log().entries)
             try:
@@ -518,8 +557,10 @@ class Library:
                 return False, f"Theia cannot write to that folder: {error.strerror or error}"
             self.set_setting(WATCH_LOG_SETTING, str(fresh.directory))
             self._log = fresh
-        self.sync_watch_log()
-        return True, str(fresh.path)
+        applied = self.sync_watch_log()
+        if found is None:
+            return True, f"{fresh.path} (new log created)"
+        return True, f"{fresh.path} ({found} saved item(s) found, {applied} applied to this library)"
 
     def sync_watch_log(self) -> int:
         """Two-way merge between the log file and the library; returns how many items changed here.
@@ -538,13 +579,19 @@ class Library:
             for media in self._media():
                 key = identity(media)
                 entry = log.get(key)
-                local = media.last_watched or 0.0
+                # A row that only remembers audio/subtitle choices holds no progress: it has
+                # a timestamp, but must not outrank what the log says about where you stopped.
+                local = (media.last_watched or 0.0) if media.position > 0 else 0.0
                 remote = float(entry["updated"]) if entry else 0.0
                 if entry is not None and remote > local + 0.01:
                     position = float(entry.get("position") or 0.0)
                     if position <= 0:
-                        if media.last_watched is not None:
-                            con.execute("DELETE FROM playback WHERE media_id = ?", (media.id,))
+                        if media.position > 0:
+                            # Reset on the other system: forget the position, keep the track choices.
+                            con.execute(
+                                "UPDATE playback SET position_seconds = 0, last_watched = ? WHERE media_id = ?",
+                                (remote, media.id),
+                            )
                             applied += 1
                         continue
                     con.execute(
@@ -686,7 +733,8 @@ def next_up(episodes: list[Media]) -> NextUp | None:
     """
     if not episodes:
         return None
-    watched = [e for e in episodes if e.last_watched]
+    # Barely started files and rows that only remember track choices are not "watched".
+    watched = [e for e in episodes if e.last_watched and e.position >= MIN_PLAYED_SECONDS]
     if not watched:
         return NextUp(episodes[0], "start")
     last = max(watched, key=lambda e: e.last_watched)
@@ -715,6 +763,14 @@ def _media_from_row(row: sqlite3.Row) -> Media:
 def _changed(row: sqlite3.Row, video: ScannedVideo) -> bool:
     """Whether the file at this path is no longer the one we indexed."""
     return row["size"] != video.size or abs(row["mtime"] - video.mtime) > 1e-3
+
+
+def _is_empty_dir(path: str) -> bool:
+    try:
+        with os.scandir(path) as entries:
+            return next(entries, None) is None
+    except OSError:
+        return False
 
 
 def _is_inside(path: str, parent: str) -> bool:

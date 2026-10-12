@@ -43,8 +43,10 @@ def find_external_subtitles(video_path: str) -> list[ExternalSubtitle]:
         sub_stem, ext = os.path.splitext(name)
         if ext.lower() not in SUBTITLE_EXTENSIONS or path in found:
             return
-        if sub_stem.casefold().startswith(base):
-            rest = sub_stem[len(stem):]
+        rest = sub_stem[len(stem):]
+        # "Show S01E1" must not claim the subtitle of "Show S01E10": a longer name only
+        # belongs to this video when the extra part starts after a separator.
+        if sub_stem.casefold().startswith(base) and (not rest or not rest[0].isalnum()):
             found[path] = ExternalSubtitle(path, describe(rest) or "Subtitles", sidecar=not rest.strip(" ._-"))
         elif exclusive:
             found[path] = ExternalSubtitle(path, describe(sub_stem) or sub_stem, sidecar=False)

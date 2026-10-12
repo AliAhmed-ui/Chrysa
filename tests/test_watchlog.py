@@ -76,6 +76,17 @@ class WatchLogSync(LibraryCase):
         self.library.sync_watch_log()
         self.assertEqual(self.by_title("Heat").position, 900.0)
 
+    def test_track_choices_do_not_hide_newer_progress_from_the_log(self):
+        self.library.set_watch_log_dir(self.logdir)
+        other = self.second_system()
+        other.set_watch_log_dir(self.logdir)
+        heat_here = self.by_title("Heat")
+        self.library.save_tracks(heat_here.id, 1, -1, None)  # only a track choice, stamped "now"
+        time.sleep(0.1)
+        other.save_progress(next(m for m in other._media() if m.title == "Heat").id, 900.0, 1300.0)
+        self.library.sync_watch_log()
+        self.assertEqual(self.by_title("Heat").position, 900.0)
+
     def test_reset_travels_too(self):
         self.library.set_watch_log_dir(self.logdir)
         heat = self.by_title("Heat")
@@ -98,7 +109,7 @@ class WatchLogSync(LibraryCase):
 
     def test_moving_the_log_carries_entries_over(self):
         self.library.set_watch_log_dir(self.logdir)
-        self.library.save_progress(self.by_title("Heat").id, 10.0, 1300.0)
+        self.library.save_progress(self.by_title("Heat").id, 100.0, 1300.0)
         new = self.tmp / "elsewhere"
         new.mkdir()
         ok, _ = self.library.set_watch_log_dir(new)
@@ -112,6 +123,38 @@ class WatchLogSync(LibraryCase):
         self.assertFalse(ok)
         self.assertTrue(message)
         self.assertIsNone(self.library.watch_log_dir())
+
+    def test_log_on_the_card_is_read_before_anything_is_written(self):
+        self.library.set_watch_log_dir(self.logdir)
+        self.library.save_progress(self.by_title("Heat").id, 500.0, 1300.0)
+        before = (self.logdir / FILENAME).read_text()
+        fresh_install = Library.open(Paths(self.tmp / "data-new"))  # new machine, nothing known yet
+        self.addCleanup(fresh_install.db.close)
+        ok, message = fresh_install.set_watch_log_dir(self.logdir)  # the card is pointed at
+        self.assertTrue(ok)
+        self.assertIn("1 saved item", message)
+        other_media = self.tmp / "new-machine-media"
+        shutil.copytree(self.media, other_media)
+        fresh_install.add_folder(other_media)
+        fresh_install.rescan()  # the library appears afterwards; the log is applied then
+        self.assertEqual([(m.title, m.position) for m in fresh_install.continue_watching()], [("Heat", 500.0)])
+        self.assertIn("movie:heat:1995", self.entries())  # nothing was lost from the card
+        self.assertNotEqual(before, "")
+
+    def test_missing_card_folder_is_not_faked_on_the_internal_disk(self):
+        card = self.tmp / "SDCARD"
+        log = WatchLog(card)
+        with self.assertRaises(OSError):
+            log.save()
+        self.assertFalse(card.exists())
+
+    def test_unreadable_log_is_set_aside_not_destroyed(self):
+        (self.logdir / FILENAME).write_text("{ not json")
+        log = WatchLog(self.logdir)
+        log.put("movie:heat:1995", {"updated": 1.0, "position": 1})
+        log.save()
+        self.assertEqual((self.logdir / (FILENAME + ".bak")).read_text(), "{ not json")
+        self.assertIn("movie:heat:1995", self.entries())
 
     def test_corrupt_file_is_ignored(self):
         (self.logdir / FILENAME).write_text("{ not json")

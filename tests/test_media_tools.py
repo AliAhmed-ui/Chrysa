@@ -147,6 +147,12 @@ class SubtitleDiscovery(TempDirCase):
     def labels(self, video):
         return [(s.label, s.sidecar) for s in find_external_subtitles(str(self.media / video))]
 
+    def test_a_longer_episode_number_does_not_lend_its_subtitle_to_a_shorter_one(self):
+        make_tree(self.media, {
+            "Show S01E1.mkv": 1000, "Show S01E10.mkv": 1000, "Show S01E10.en.srt": b"1\n", "Show S01E1.en.srt": b"1\n",
+        })
+        self.assertEqual(self.labels("Show S01E1.mkv"), [("English", False)])
+
     def test_movie_folder_with_sidecar_and_subs_folder(self):
         folder = "Backrooms (2026) [1080p] [WEBRip] [5.1] [YTS.GG - YTS.BZ]"
         stem = "Backrooms.2026.1080p.WEBRip.x264.AAC5.1-[YTS.GG - YTS.BZ]"

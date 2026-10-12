@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
 from pathlib import Path
 
 from . import naming
+from .config import FINISHED_FRACTION
 from .models import KIND_EPISODE, KIND_MOVIE, Media
 
 FILENAME = "theia-watch-log.json"
@@ -54,7 +56,7 @@ def describe(media: Media, position: float, duration: float, updated: float) -> 
         entry["season"] = media.season
         entry["episode"] = media.episode
     if duration > 0:
-        entry["finished"] = position / duration > 0.92
+        entry["finished"] = position / duration > FINISHED_FRACTION
     return entry
 
 
@@ -67,6 +69,7 @@ class WatchLog:
         self.entries: dict[str, dict] = {}
         self._lock = threading.RLock()
         self._seen: tuple[int, int] | None = None  # (mtime_ns, size) of the file when last read
+        self._unreadable = False  # the file exists but could not be parsed the last time it was read
         self.load()
 
     # ----------------------------------------------------------- reading
@@ -78,8 +81,12 @@ class WatchLog:
                 stat = self.path.stat()
                 with open(self.path, encoding="utf-8") as handle:
                     data = json.load(handle)
+            except FileNotFoundError:
+                return  # no log here yet: a new one is created on the first save
             except (OSError, ValueError):
-                return  # missing, unreadable or half-written: keep what we have
+                self._unreadable = True  # unreadable or half-written: keep what we have
+                return
+            self._unreadable = False
             self._seen = (stat.st_mtime_ns, stat.st_size)
             items = data.get("entries") if isinstance(data, dict) else None
             if isinstance(items, dict):
@@ -109,7 +116,12 @@ class WatchLog:
         with self._lock:
             if self._changed_on_disk():
                 self.load()  # the other system wrote meanwhile: merge before overwriting
-            self.directory.mkdir(exist_ok=True)  # not the parents: an unmounted drive must not be faked
+            if not self.directory.is_dir():
+                # Never create the folder: an SD card that is not inserted must not be faked
+                # by an empty directory of the same name on the internal disk.
+                raise FileNotFoundError(2, "The log folder is not available (is the card inserted?)", str(self.directory))
+            if self._unreadable:
+                self._keep_unreadable_copy()
             payload = {"theia_watch_log": FORMAT_VERSION, "saved": time.time(), "entries": self.entries}
             handle, temp = tempfile.mkstemp(prefix=".theia-log-", suffix=".tmp", dir=self.directory)
             try:
@@ -126,6 +138,14 @@ class WatchLog:
                 raise
             stat = self.path.stat()
             self._seen = (stat.st_mtime_ns, stat.st_size)
+
+    def _keep_unreadable_copy(self) -> None:
+        """Set aside a log we could not read before the next save replaces it."""
+        try:
+            shutil.copy2(self.path, self.path.with_name(self.path.name + ".bak"))
+        except OSError:
+            pass
+        self._unreadable = False
 
     def _changed_on_disk(self) -> bool:
         try:
