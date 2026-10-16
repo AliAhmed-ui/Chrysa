@@ -2,7 +2,7 @@
 __pycache__/
 *.pyc
 # written by run.sh
-assets/theia.svg
+assets/chrysa.svg
 
 # Virtual environment & Python artifacts
 .venv/
@@ -11,6 +11,6 @@ __pycache__/
 *$py.class
 
 # Local user/app data
-theia.db
+chrysa.db
 thumbnails/
 .cache/

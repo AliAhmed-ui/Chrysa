@@ -9,9 +9,9 @@ import threading
 import unittest
 
 from tests.helpers import TempDirCase, make_tree
-from theia.probe import find_tool, probe, probe_many
-from theia.subtitles import describe, find_external_subtitles
-from theia.thumbnails import ThumbnailWorkers, cache_file, grab_frame, make_thumbnail
+from chrysa.probe import find_tool, probe, probe_many
+from chrysa.subtitles import describe, find_external_subtitles
+from chrysa.thumbnails import ThumbnailWorkers, cache_file, grab_frame, make_thumbnail
 
 HAVE_FFMPEG = bool(find_tool("ffmpeg") and find_tool("ffprobe"))
 

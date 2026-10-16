@@ -8,11 +8,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from theia import library as library_module
-from theia import naming
-from theia.config import Paths
-from theia.library import Library
-from theia.probe import MediaInfo
+from chrysa import library as library_module
+from chrysa import naming
+from chrysa.config import Paths
+from chrysa.library import Library
+from chrysa.probe import MediaInfo
 
 MB = 1024 * 1024
 
@@ -37,7 +37,7 @@ class TempDirCase(unittest.TestCase):
     """A test with its own scratch directory and a clean name-parsing cache."""
 
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="theia-test-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="chrysa-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.media = self.tmp / "media"
         self.media.mkdir()

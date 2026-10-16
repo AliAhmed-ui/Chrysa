@@ -71,7 +71,7 @@ def probe_many(
     if not paths:
         return
     workers = workers or max(2, min(8, (os.cpu_count() or 4)))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="theia-probe") as pool:
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="chrysa-probe") as pool:
         futures = {pool.submit(probe, path): path for path in paths}
         for future in as_completed(futures):
             if should_stop and should_stop():

@@ -139,7 +139,7 @@ class Database:
         version = con.execute("PRAGMA user_version").fetchone()[0]
         if version > SCHEMA_VERSION:
             raise RuntimeError(
-                f"{self.path} was written by a newer Theia (schema {version}); "
+                f"{self.path} was written by a newer Chrysa (schema {version}); "
                 f"this version understands schema {SCHEMA_VERSION}."
             )
         if version < SCHEMA_VERSION:

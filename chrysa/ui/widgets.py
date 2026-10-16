@@ -495,9 +495,9 @@ def vivid(colour: QColor, value: float = 0.85, floor: float = 0.55) -> QColor:
 
 
 class BrandLabel(QWidget):
-    """The THEIA wordmark: light, widely tracked, with a soft metallic gradient."""
+    """The CHRYSA wordmark: light, widely tracked, with a soft metallic gradient."""
 
-    def __init__(self, text: str = "THEIA", parent: QWidget | None = None) -> None:
+    def __init__(self, text: str = "CHRYSA", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._text = text
         self.setFixedHeight(34)

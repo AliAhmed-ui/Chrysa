@@ -6,8 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-APP_NAME = "Theia"
-APP_ID = "theia"  # desktop-file id / X11 instance name
+APP_NAME = "Chrysa"
+APP_ID = "chrysa"  # desktop-file id / X11 instance name
 
 # --- playback thresholds -------------------------------------------------
 MIN_PLAYED_SECONDS = 5  # less than this is a glance, not watching: not remembered
@@ -46,13 +46,13 @@ def default_media_dir() -> Path:
 
 @dataclass(frozen=True, slots=True)
 class Paths:
-    """Where Theia keeps its state (``~/.local/share/theia`` unless overridden)."""
+    """Where Chrysa keeps its state (``~/.local/share/chrysa`` unless overridden)."""
 
     data_dir: Path
 
     @property
     def database(self) -> Path:
-        return self.data_dir / "theia.db"
+        return self.data_dir / "chrysa.db"
 
     @property
     def thumbnails(self) -> Path:
@@ -60,7 +60,7 @@ class Paths:
 
     @property
     def log_file(self) -> Path:
-        return self.data_dir / "theia.log"
+        return self.data_dir / "chrysa.log"
 
     def ensure(self) -> Paths:
         self.thumbnails.mkdir(parents=True, exist_ok=True)
@@ -68,7 +68,7 @@ class Paths:
 
 
 def get_paths() -> Paths:
-    """Resolve the data directory. ``THEIA_DATA_DIR`` overrides it (used by tests)."""
-    override = os.environ.get("THEIA_DATA_DIR")
-    base = Path(override).expanduser() if override else Path.home() / ".local" / "share" / "theia"
+    """Resolve the data directory. ``CHRYSA_DATA_DIR`` overrides it (used by tests)."""
+    override = os.environ.get("CHRYSA_DATA_DIR")
+    base = Path(override).expanduser() if override else Path.home() / ".local" / "share" / "chrysa"
     return Paths(base)

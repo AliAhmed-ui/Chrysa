@@ -1,7 +1,7 @@
 """A portable watch log: where you stopped in every movie and episode.
 
 The log is one small JSON file in a folder the user picks (for example on a
-partition shared by both systems of a dual boot). Theia keeps it up to date
+partition shared by both systems of a dual boot). Chrysa keeps it up to date
 while you watch and silently merges it into the library on start-up and after
 each scan, so progress follows you between operating systems.
 
@@ -26,7 +26,7 @@ from . import naming
 from .config import FINISHED_FRACTION
 from .models import KIND_EPISODE, KIND_MOVIE, Media
 
-FILENAME = "theia-watch-log.json"
+FILENAME = "chrysa-watch-log.json"
 FORMAT_VERSION = 1
 
 
@@ -122,8 +122,8 @@ class WatchLog:
                 raise FileNotFoundError(2, "The log folder is not available (is the card inserted?)", str(self.directory))
             if self._unreadable:
                 self._keep_unreadable_copy()
-            payload = {"theia_watch_log": FORMAT_VERSION, "saved": time.time(), "entries": self.entries}
-            handle, temp = tempfile.mkstemp(prefix=".theia-log-", suffix=".tmp", dir=self.directory)
+            payload = {"chrysa_watch_log": FORMAT_VERSION, "saved": time.time(), "entries": self.entries}
+            handle, temp = tempfile.mkstemp(prefix=".chrysa-log-", suffix=".tmp", dir=self.directory)
             try:
                 with os.fdopen(handle, "w", encoding="utf-8") as out:
                     json.dump(payload, out, ensure_ascii=False, indent=1, sort_keys=True)

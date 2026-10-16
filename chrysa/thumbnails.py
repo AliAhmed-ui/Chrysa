@@ -142,7 +142,7 @@ class ThumbnailWorkers:
         self._running.set()
         self._stopped = False
         self._threads = [
-            threading.Thread(target=self._run, name=f"theia-thumb-{i}", daemon=True) for i in range(workers)
+            threading.Thread(target=self._run, name=f"chrysa-thumb-{i}", daemon=True) for i in range(workers)
         ]
         for thread in self._threads:
             thread.start()

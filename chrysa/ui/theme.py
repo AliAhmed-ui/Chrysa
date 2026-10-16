@@ -300,10 +300,10 @@ def ui_font(pixel_size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFon
 
 
 def app_icon() -> QIcon:
-    """The Theia icon: the SVG written by run.sh if present, else a painted stand-in."""
+    """The Chrysa icon: the SVG written by run.sh if present, else a painted stand-in."""
     candidates = (
-        Path(__file__).resolve().parents[2] / "assets" / "theia.svg",
-        Path.home() / ".local/share/icons/hicolor/scalable/apps/theia.svg",
+        Path(__file__).resolve().parents[2] / "assets" / "chrysa.svg",
+        Path.home() / ".local/share/icons/hicolor/scalable/apps/chrysa.svg",
     )
     for candidate in candidates:
         if candidate.is_file():

@@ -2,8 +2,8 @@
 
 import unittest
 
-from theia.ui.theme_manager import ThemeManager
-from theia.ui.themes import DEFAULT_THEME, THEMES
+from chrysa.ui.theme_manager import ThemeManager
+from chrysa.ui.themes import DEFAULT_THEME, THEMES
 
 ORDER = ["neon_grid", "deep_cosmos", "solarized_amber", "boreal_forest"]
 KEYS = {"key", "display_name", "bg_base", "bg_surface", "border", "accent", "accent_alt", "text_primary", "text_muted"}
@@ -43,7 +43,7 @@ class Manager(unittest.TestCase):
     def test_invalid_theme_and_invalid_saved_value_are_ignored(self):
         manager = ThemeManager(load=lambda: "nope")
         self.assertEqual(manager.current_theme_key, DEFAULT_THEME)
-        with self.assertLogs("theia.ui.theme_manager", level="WARNING"):
+        with self.assertLogs("chrysa.ui.theme_manager", level="WARNING"):
             manager.set_theme("also-nope")
         self.assertEqual(manager.current_theme_key, DEFAULT_THEME)
 
@@ -56,7 +56,7 @@ class Manager(unittest.TestCase):
 
         manager.subscribe(boom)
         manager.subscribe(calls.append)
-        with self.assertLogs("theia.ui.theme_manager", level="ERROR"):
+        with self.assertLogs("chrysa.ui.theme_manager", level="ERROR"):
             manager.cycle_theme()
         self.assertEqual(len(calls), 1)  # one bad listener does not starve the others
         manager.unsubscribe(calls.append)
@@ -69,7 +69,7 @@ class Manager(unittest.TestCase):
             raise OSError("disk full")
 
         manager = ThemeManager(save=fail)
-        with self.assertLogs("theia.ui.theme_manager", level="ERROR"):
+        with self.assertLogs("chrysa.ui.theme_manager", level="ERROR"):
             manager.cycle_theme()
         self.assertNotEqual(manager.current_theme_key, DEFAULT_THEME)
 
@@ -77,7 +77,7 @@ class Manager(unittest.TestCase):
 class Readability(unittest.TestCase):
     @unittest.skipUnless(__import__("importlib").util.find_spec("PyQt6"), "PyQt6 not installed")
     def test_contrast(self):
-        from theia.ui import theme
+        from chrysa.ui import theme
 
         for palette in THEMES.values():
             theme._install(palette)

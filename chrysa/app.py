@@ -35,7 +35,7 @@ def run_gui(args) -> int:
     from .ui.main_window import MainWindow
 
     # argv[0] becomes the X11 instance name; with the application name it forms
-    # WM_CLASS ("theia", "Theia"), which is how the dock matches theia.desktop.
+    # WM_CLASS ("chrysa", "Chrysa"), which is how the dock matches chrysa.desktop.
     app = QApplication([APP_ID])
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
@@ -44,8 +44,8 @@ def run_gui(args) -> int:
     paths = get_paths().ensure()
 
     # One window per user: a second launch just raises the first.
-    server_name = f"theia-{os.getuid()}"
-    lock = QLockFile(str(paths.data_dir / "theia.lock"))
+    server_name = f"chrysa-{os.getuid()}"
+    lock = QLockFile(str(paths.data_dir / "chrysa.lock"))
     lock.setStaleLockTime(0)  # a lock left by a crashed process is detected by its dead PID
     if not lock.tryLock(100):
         socket = QLocalSocket()

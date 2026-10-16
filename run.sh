@@ -1,36 +1,46 @@
 #!/usr/bin/env bash
 #
-# Theia launcher — sets everything up on first run, then starts the app.
+# Chrysa launcher — sets everything up on first run, then starts the app.
 #
-#   1. detects the distribution (/etc/os-release) and installs missing system
-#      packages with apt, dnf or pacman (asks for sudo only if something is missing)
+#   1. detects the platform: a Linux distribution (/etc/os-release) gets missing system
+#      packages installed with apt, dnf, pacman or zypper (sudo only if something is
+#      missing); Windows 10/11 (Git Bash/MSYS2/Cygwin, or run.bat) gets Python, VLC and
+#      FFmpeg installed with winget
 #   2. creates .venv and installs requirements.txt (re-checked on every launch)
-#   3. writes the Theia icon and ~/.local/share/applications/theia.desktop
-#   4. starts Theia on X11/XWayland (QT_QPA_PLATFORM=xcb)
+#   3. Linux: writes the Chrysa icon and ~/.local/share/applications/chrysa.desktop
+#      Windows: adds a Chrysa shortcut to the Start menu
+#   4. starts Chrysa (Linux: on X11/XWayland, QT_QPA_PLATFORM=xcb)
 #
-# Usage:  ./run.sh [--setup-only] [--skip-system-deps] [theia options…]
+# Usage:  ./run.sh [--setup-only] [--skip-system-deps] [--ask-shortcut] [chrysa options…]
 #         ./run.sh --scan --list        # headless: rescan and print the library
 #
 set -Eeuo pipefail
 
-APP_NAME="Theia"
+APP_NAME="Chrysa"
+IS_WINDOWS=0
+case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; esac
+
 APP_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)"
 RUN_SH="$APP_DIR/run.sh"
 VENV_DIR="$APP_DIR/.venv"
+if (( IS_WINDOWS )); then VENV_BIN="$VENV_DIR/Scripts" VENV_PY="$VENV_DIR/Scripts/python.exe"
+else VENV_BIN="$VENV_DIR/bin" VENV_PY="$VENV_DIR/bin/python"; fi
 REQUIREMENTS="$APP_DIR/requirements.txt"
-DATA_DIR="$HOME/.local/share/theia"
-ICON_FILE="$HOME/.local/share/icons/hicolor/scalable/apps/theia.svg"
-DESKTOP_FILE="$HOME/.local/share/applications/theia.desktop"
+DATA_DIR="$HOME/.local/share/chrysa"
+ICON_FILE="$HOME/.local/share/icons/hicolor/scalable/apps/chrysa.svg"
+DESKTOP_FILE="$HOME/.local/share/applications/chrysa.desktop"
 
 SETUP_ONLY=0
-SKIP_SYSTEM_DEPS="${THEIA_SKIP_SYSTEM_DEPS:-0}"
+ASK_SHORTCUT=0
+SKIP_SYSTEM_DEPS="${CHRYSA_SKIP_SYSTEM_DEPS:-0}"
 APP_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --setup-only) SETUP_ONLY=1 ;;
         --skip-system-deps) SKIP_SYSTEM_DEPS=1 ;;
+        --ask-shortcut) ASK_SHORTCUT=1 ;;
         -h|--help)
-            sed -n '2,13p' "$RUN_SH" | sed 's/^# \{0,1\}//'
+            sed -n "2,16p" "$RUN_SH" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) APP_ARGS+=("$arg") ;;
     esac
@@ -40,15 +50,15 @@ INTERACTIVE=0
 [[ -t 0 && -t 2 ]] && INTERACTIVE=1
 
 if [[ -t 2 ]]; then RED=$'\033[1;31m' YELLOW=$'\033[1;33m' RESET=$'\033[0m'; else RED="" YELLOW="" RESET=""; fi
-log()  { printf '%s[theia]%s %s\n' "$RED" "$RESET" "$*" >&2; }
-warn() { printf '%s[theia]%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
+log()  { printf '%s[chrysa]%s %s\n' "$RED" "$RESET" "$*" >&2; }
+warn() { printf '%s[chrysa]%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
 notify() {  # a desktop notification when there is no terminal to read warnings in
     if (( ! INTERACTIVE )) && command -v notify-send >/dev/null 2>&1; then
         notify-send --app-name="$APP_NAME" --icon=dialog-warning "$1" "$2" || true
     fi
 }
 die() {
-    printf '%s[theia] error:%s %s\n' "$RED" "$RESET" "$*" >&2
+    printf '%s[chrysa] error:%s %s\n' "$RED" "$RESET" "$*" >&2
     # Started from the app launcher there is no terminal to read this in.
     if (( ! INTERACTIVE )) && command -v notify-send >/dev/null 2>&1; then
         notify-send --app-name="$APP_NAME" --icon=dialog-error "$APP_NAME could not start" "$*" || true
@@ -60,7 +70,7 @@ trap 'die "setup failed at line $LINENO (see the output above)"' ERR
 # --------------------------------------------------------------------------
 # 1. System dependencies
 # --------------------------------------------------------------------------
-# Designed for a freshly installed distribution: everything Theia needs (Python,
+# Designed for a freshly installed distribution: everything Chrysa needs (Python,
 # venv, pip, VLC, FFmpeg, Qt's X11 libraries) is detected and installed here.
 
 OS_ID=""
@@ -95,10 +105,28 @@ detect_package_manager() {
 # Python >= 3.10 with working venv + ensurepip (Debian splits these into python3-venv).
 python_is_usable() {
     [[ -n "$1" && -x "$1" ]] \
-        && "$1" -c 'import sys, venv, ensurepip; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1
+        && "$1" -c 'import sys, venv, ensurepip; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1 \
+        && { (( ! IS_WINDOWS )) || python_is_64bit "$1"; }
+}
+
+# PyQt6 only ships 64-bit wheels, and python-vlc needs a libVLC of the same width.
+python_is_64bit() {
+    "$1" -c 'import struct, sys; sys.exit(0 if struct.calcsize("P") == 8 else 1)' >/dev/null 2>&1
 }
 
 find_python() {
+    if (( IS_WINDOWS )); then
+        local exe
+        for exe in "$(command -v python 2>/dev/null || true)" "$(command -v python3 2>/dev/null || true)" \
+                "$(py -3 -c 'import sys; print(sys.executable)' 2>/dev/null | tr -d '\r' || true)" \
+                "$LOCALAPPDATA"/Programs/Python/Python3{14,13,12,11,10}/python.exe \
+                "$PROGRAMFILES"/Python3{14,13,12,11,10}/python.exe; do
+            # Skip the Microsoft Store stub, which opens the Store instead of running Python.
+            [[ "$exe" == *WindowsApps* ]] && continue
+            if python_is_usable "$exe"; then echo "$exe"; return 0; fi
+        done
+        return 1
+    fi
     # Prefer the distribution's Python: python3-venv belongs to it, and it shares the
     # system C++ runtime with libVLC (a conda Python on PATH can clash with VLC plugins).
     local candidate
@@ -203,7 +231,73 @@ run_privileged() {
     fi
 }
 
+# True when the Windows PE file $1 (exe/dll) is a 64-bit x86 binary.
+pe_is_x64() {
+    local offset machine
+    [[ -f "$1" ]] || return 1
+    offset="$(od -An -t u4 -j 60 -N 4 "$1" 2>/dev/null | tr -d ' ')" || return 1
+    [[ -n "$offset" ]] || return 1
+    machine="$(od -An -t x2 -j $((offset + 4)) -N 2 "$1" 2>/dev/null | tr -d ' ')"
+    [[ "$machine" == 8664 ]]
+}
+
+# Directory of a 64-bit VLC install (a 32-bit one in "Program Files (x86)" is ignored).
+find_vlc64() {
+    local base="${PROGRAMW6432:-${PROGRAMFILES% (x86)}}" dir
+    for dir in "$base/VideoLAN/VLC" "$base (x86)/VideoLAN/VLC" "$LOCALAPPDATA/Programs/VideoLAN/VLC"; do
+        if pe_is_x64 "$dir/libvlc.dll"; then echo "$dir"; return 0; fi
+    done
+    return 1
+}
+
+# Put the usual install locations of FFmpeg and the 64-bit VLC on PATH (a shell started
+# before winget finished does not see them yet) and point python-vlc at the 64-bit libVLC.
+windows_refresh_path() {
+    local dir vlc
+    for dir in "$LOCALAPPDATA/Microsoft/WinGet/Links" "${PROGRAMW6432:-$PROGRAMFILES}/ffmpeg/bin" \
+            "$LOCALAPPDATA"/Microsoft/WinGet/Packages/Gyan.FFmpeg*/ffmpeg-*/bin; do
+        [[ -d "$dir" ]] && PATH="$PATH:$dir"
+    done
+    if vlc="$(find_vlc64)"; then
+        export PYTHON_VLC_LIB_PATH="$vlc/libvlc.dll" PYTHON_VLC_MODULE_PATH="$vlc/plugins"
+    fi
+    export PATH
+    hash -r
+}
+
+windows_missing_packages() {  # prints winget package ids
+    find_python >/dev/null || echo Python.Python.3.12
+    find_vlc64 >/dev/null || echo VideoLAN.VLC
+    command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1 || echo Gyan.FFmpeg
+}
+
+ensure_windows_dependencies() {
+    local missing=() id
+    case "${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-AMD64}}" in
+        x86|X86) warn "This is a 32-bit Windows: PyQt6 and a matching libVLC are only available for 64-bit Windows, so Chrysa cannot run here." ;;
+    esac
+    windows_refresh_path
+    mapfile -t missing < <(windows_missing_packages)
+    (( ${#missing[@]} )) || return 0
+    command -v winget >/dev/null 2>&1 \
+        || { warn "winget was not found: install ${missing[*]} yourself (64-bit Python 3.10+, 64-bit VLC, FFmpeg), then run run.sh again."; return 0; }
+    log "Missing or 32-bit: ${missing[*]} — installing the 64-bit versions with winget (Windows may ask for permission)…"
+    for id in "${missing[@]}"; do
+        # --force: a 32-bit copy of the same package counts as "already installed" otherwise;
+        # the 64-bit build is installed beside it and the old one is left alone.
+        winget install --id "$id" -e --silent --architecture x64 --force \
+            --accept-package-agreements --accept-source-agreements \
+            || warn "winget could not install $id."
+    done
+    windows_refresh_path
+    mapfile -t missing < <(windows_missing_packages)
+    if (( ${#missing[@]} )); then
+        warn "Still missing: ${missing[*]} — if they were just installed, close this window and run run.sh again."
+    fi
+}
+
 ensure_system_dependencies() {
+    if (( IS_WINDOWS )); then ensure_windows_dependencies; return 0; fi
     local manager missing=() command
     manager="$(detect_package_manager)"
     if [[ "$manager" == unknown ]]; then
@@ -224,9 +318,9 @@ ensure_system_dependencies() {
 
     mapfile -t missing < <(missing_packages "$manager")
     if (( ${#missing[@]} )); then
-        warn "Still missing: ${missing[*]} — continuing; Theia will say so if it cannot work without them."
+        warn "Still missing: ${missing[*]} — continuing; Chrysa will say so if it cannot work without them."
         warn "To install them yourself, run in a terminal:  sudo sh -c '$command'"
-        notify "Theia is missing system packages" "Run ./run.sh in a terminal to install: ${missing[*]}"
+        notify "Chrysa is missing system packages" "Run ./run.sh in a terminal to install: ${missing[*]}"
     fi
 }
 
@@ -235,11 +329,11 @@ ensure_system_dependencies() {
 # --------------------------------------------------------------------------
 
 requirements_fingerprint() {
-    { "$VENV_DIR/bin/python" -c 'import sys; print(sys.version)'; cat "$REQUIREMENTS"; } | sha256sum | cut -d' ' -f1
+    { "$VENV_PY" -c 'import sys; print(sys.version)'; cat "$REQUIREMENTS"; } | sha256sum | cut -d' ' -f1
 }
 
 modules_present() {
-    "$VENV_DIR/bin/python" - <<'PY' 2>/dev/null
+    "$VENV_PY" - <<'PY' 2>/dev/null
 import importlib.util, sys
 sys.exit(0 if all(importlib.util.find_spec(m) for m in ("PyQt6", "vlc", "guessit", "subliminal")) else 1)
 PY
@@ -247,19 +341,23 @@ PY
 
 ensure_virtualenv() {
     local python stamp="$VENV_DIR/.requirements.sha256" created=0
-    if [[ ! -d "$VENV_DIR" ]] || ! "$VENV_DIR/bin/python" -c 'import sys' >/dev/null 2>&1; then
+    if (( IS_WINDOWS )) && [[ -f "$VENV_PY" ]] && ! python_is_64bit "$VENV_PY"; then
+        log "The existing .venv is 32-bit; rebuilding it with 64-bit Python."
+        rm -rf "$VENV_DIR"
+    fi
+    if [[ ! -d "$VENV_DIR" ]] || ! "$VENV_PY" -c 'import sys' >/dev/null 2>&1; then
         python="$(find_python)" || die "Python 3.10 or newer with venv and pip is required, and none was found or installable. Install it (Debian/Ubuntu: python3 python3-venv python3-pip) and run ./run.sh again."
         log "Creating virtual environment in .venv ($("$python" --version 2>&1))…"
         "$python" -m venv --clear "$VENV_DIR" \
             || die "Could not create the virtual environment. On Debian/Ubuntu: sudo apt install python3-venv"
-        "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1 \
+        "$VENV_PY" -m pip --version >/dev/null 2>&1 \
             || die "The virtual environment has no pip. On Debian/Ubuntu: sudo apt install python3-venv python3-pip"
         created=1
     fi
 
     set +u  # activate scripts of older Pythons trip over unset variables
     # shellcheck disable=SC1091
-    source "$VENV_DIR/bin/activate"
+    source "$VENV_BIN/activate"
     set -u
 
     if (( created )); then
@@ -282,15 +380,19 @@ check_libvlc() {
     # python-vlc raises on import when libvlc.so cannot be found, and Instance() fails
     # when VLC's plugins are missing; either way no video would play.
     local output
-    if ! output="$("$VENV_DIR/bin/python" -c 'import vlc, sys; sys.exit(0 if vlc.Instance("--quiet") else 1)' 2>&1)"; then
+    if ! output="$("$VENV_PY" -c 'import vlc, sys; sys.exit(0 if vlc.Instance("--quiet") else 1)' 2>&1)"; then
         warn "libVLC is not usable, so videos will not play: ${output##*$'\n'}"
-        case "$(detect_package_manager)" in
-            apt)    warn "Install it with:  sudo apt install vlc libvlc-dev" ;;
-            dnf)    warn "Install it with:  sudo dnf install vlc  (VLC is in RPM Fusion on Fedora)" ;;
-            pacman) warn "Install it with:  sudo pacman -S vlc vlc-plugins-all  (run  sudo pacman -Syu  first if it cannot find the package)" ;;
+        if (( IS_WINDOWS )); then
+            warn "Install 64-bit VLC with:  winget install --id VideoLAN.VLC -e --architecture x64 --force"
+        fi
+        case "$(( IS_WINDOWS )) $(detect_package_manager)" in
+            1*) ;;
+            *apt)    warn "Install it with:  sudo apt install vlc libvlc-dev" ;;
+            *dnf)    warn "Install it with:  sudo dnf install vlc  (VLC is in RPM Fusion on Fedora)" ;;
+            *pacman) warn "Install it with:  sudo pacman -S vlc vlc-plugins-all  (run  sudo pacman -Syu  first if it cannot find the package)" ;;
             *)      warn "Install VLC (the package that provides libvlc.so) with your package manager." ;;
         esac
-        notify "Theia cannot play videos" "libVLC is missing. Run ./run.sh in a terminal for the install command."
+        notify "Chrysa cannot play videos" "libVLC is missing. Run ./run.sh in a terminal for the install command."
     fi
 }
 
@@ -306,13 +408,14 @@ check_qt() {
     # Qt's X11 plugin fails at startup when one of its shared libraries is absent;
     # name the missing ones instead of leaving a bare "could not load xcb" error.
     local plugin missing
-    plugin="$("$VENV_DIR/bin/python" -c 'import os, PyQt6; print(os.path.join(os.path.dirname(PyQt6.__file__), "Qt6", "plugins", "platforms", "libqxcb.so"))' 2>/dev/null || true)"
+    (( IS_WINDOWS )) && return 0
+    plugin="$("$VENV_PY" -c 'import os, PyQt6; print(os.path.join(os.path.dirname(PyQt6.__file__), "Qt6", "plugins", "platforms", "libqxcb.so"))' 2>/dev/null || true)"
     [[ -f "$plugin" ]] && command -v ldd >/dev/null 2>&1 || return 0
     missing="$(ldd "$plugin" 2>/dev/null | sed -n 's/^[[:space:]]*\(.*\) => not found.*/\1/p' | tr '\n' ' ')"
     if [[ -n "${missing// /}" ]]; then
         warn "Qt cannot start: these libraries are missing: $missing"
         warn "Install the packages that provide them (e.g. libxcb-*, libxkbcommon-x11, libEGL/libGL) and run ./run.sh again."
-        notify "Theia cannot start" "Missing system libraries: $missing"
+        notify "Chrysa cannot start" "Missing system libraries: $missing"
     fi
 }
 
@@ -338,42 +441,27 @@ write_icon() {
     cat <<'SVG'
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <title>Theia</title>
+  <title>Chrysa</title>
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1b1442"/>
-      <stop offset="1" stop-color="#07060f"/>
+      <stop offset="0" stop-color="#0b2a3a"/>
+      <stop offset="1" stop-color="#04090f"/>
     </linearGradient>
     <radialGradient id="bloom" cx="0.5" cy="0.95" r="0.75">
-      <stop offset="0" stop-color="#ff3d81" stop-opacity="0.55"/>
-      <stop offset="0.6" stop-color="#7a3cff" stop-opacity="0.18"/>
-      <stop offset="1" stop-color="#7a3cff" stop-opacity="0"/>
+      <stop offset="0" stop-color="#22e5ff" stop-opacity="0.5"/>
+      <stop offset="0.6" stop-color="#0aa6d6" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#0aa6d6" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="glyph" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#ffd0e4"/>
-    </linearGradient>
-    <linearGradient id="spark" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffd166"/>
-      <stop offset="1" stop-color="#ff5d8f"/>
+      <stop offset="0" stop-color="#e8fdff"/>
+      <stop offset="1" stop-color="#27d9f5"/>
     </linearGradient>
   </defs>
   <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#tile)"/>
   <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#bloom)"/>
   <rect x="8.5" y="8.5" width="239" height="239" rx="57.5" fill="none" stroke="#ffffff" stroke-opacity="0.12"/>
-  <!-- a "T" whose crossbar is a strip of film -->
-  <rect x="104" y="80" width="48" height="124" rx="14" fill="url(#glyph)"/>
-  <rect x="52" y="62" width="152" height="46" rx="14" fill="url(#glyph)"/>
-  <g fill="#1b1442" fill-opacity="0.85">
-    <rect x="64" y="72" width="12" height="9" rx="3"/><rect x="88" y="72" width="12" height="9" rx="3"/>
-    <rect x="112" y="72" width="12" height="9" rx="3"/><rect x="136" y="72" width="12" height="9" rx="3"/>
-    <rect x="160" y="72" width="12" height="9" rx="3"/><rect x="184" y="72" width="12" height="9" rx="3" opacity="0"/>
-    <rect x="64" y="89" width="12" height="9" rx="3"/><rect x="88" y="89" width="12" height="9" rx="3"/>
-    <rect x="112" y="89" width="12" height="9" rx="3" opacity="0"/><rect x="136" y="89" width="12" height="9" rx="3"/>
-    <rect x="160" y="89" width="12" height="9" rx="3"/>
-  </g>
-  <!-- Theia, goddess of light -->
-  <path d="M190 128c2.6 13.4 8.6 19.4 22 22-13.4 2.6-19.4 8.6-22 22-2.6-13.4-8.6-19.4-22-22 13.4-2.6 19.4-8.6 22-22z" fill="url(#spark)"/>
+  <!-- a capital "C" -->
+  <path d="M182 84A66 66 0 1 0 182 172" fill="none" stroke="url(#glyph)" stroke-width="30" stroke-linecap="round"/>
 </svg>
 SVG
 }
@@ -388,9 +476,72 @@ desktop_quote() {  # quote one Exec= argument per the Desktop Entry Specificatio
     printf '"%s"' "$value"
 }
 
+make_windows_shortcut() {  # $1 = .lnk path; starts Chrysa without a console window
+    local shortcut="$1" pythonw
+    pythonw="$(cygpath -w "$VENV_BIN/pythonw.exe")"
+    powershell.exe -NoProfile -Command "\$s = (New-Object -ComObject WScript.Shell).CreateShortcut('$(cygpath -w "$shortcut")'); \$s.TargetPath = '$pythonw'; \$s.Arguments = '-m chrysa'; \$s.WorkingDirectory = '$(cygpath -w "$APP_DIR")'; \$s.Description = 'Offline media center'; \$s.Save()" \
+        >/dev/null 2>&1
+}
+
+install_windows_shortcut() {  # Start menu entry
+    local shortcut="$APPDATA/Microsoft/Windows/Start Menu/Programs/$APP_NAME.lnk"
+    [[ -f "$shortcut" ]] && return 0
+    make_windows_shortcut "$shortcut" && log "Added $APP_NAME to the Start menu." || true
+}
+
+desktop_dir() {
+    local dir=""
+    case "$(uname -s 2>/dev/null)" in
+        MINGW*|MSYS*|CYGWIN*) dir="$(powershell.exe -NoProfile -Command '[Environment]::GetFolderPath("Desktop")' 2>/dev/null | tr -d '\r')"
+                              [[ -n "$dir" ]] && dir="$(cygpath -u "$dir")" ;;
+        *) command -v xdg-user-dir >/dev/null 2>&1 && dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)" ;;
+    esac
+    [[ -n "$dir" && -d "$dir" ]] || dir="$HOME/Desktop"
+    echo "$dir"
+}
+
+# Create (or, with "no", remove) the desktop shortcut on any supported OS.
+set_desktop_shortcut() {  # $1 = yes|no
+    local dir target
+    dir="$(desktop_dir)"
+    if (( IS_WINDOWS )); then
+        target="$dir/$APP_NAME.lnk"
+        if [[ "$1" == yes ]]; then make_windows_shortcut "$target" && log "Desktop shortcut created: $target"
+        else rm -f "$target"; fi
+    elif [[ "$(uname -s)" == Darwin ]]; then
+        target="$dir/$APP_NAME.command"
+        if [[ "$1" == yes ]]; then
+            printf '#!/bin/bash\nexec "%s"\n' "$RUN_SH" > "$target" && chmod +x "$target" && log "Desktop shortcut created: $target"
+        else rm -f "$target"; fi
+    else
+        target="$dir/$APP_NAME.desktop"
+        if [[ "$1" == yes ]]; then
+            mkdir -p "$dir"
+            cp -f "$DESKTOP_FILE" "$target" && chmod +x "$target"
+            # GNOME and Cinnamon only run a desktop file marked as trusted.
+            command -v gio >/dev/null 2>&1 && gio set "$target" metadata::trusted true >/dev/null 2>&1 || true
+            log "Desktop shortcut created: $target"
+        else rm -f "$target"; fi
+    fi
+}
+
+# Ask once (the answer is remembered; --ask-shortcut asks again). Needs a terminal.
+ask_desktop_shortcut() {
+    local answer="" file="$DATA_DIR/.desktop-shortcut"
+    (( INTERACTIVE )) || return 0
+    if (( ! ASK_SHORTCUT )) && [[ -f "$file" ]]; then return 0; fi
+    while [[ "${answer,,}" != y* && "${answer,,}" != n* ]]; do
+        read -r -p "[chrysa] Create a desktop shortcut for $APP_NAME? [y/n] " answer || return 0
+    done
+    mkdir -p "$DATA_DIR"
+    if [[ "${answer,,}" == y* ]]; then set_desktop_shortcut yes; echo yes > "$file"
+    else set_desktop_shortcut no; echo no > "$file"; log "No desktop shortcut."; fi
+}
+
 install_desktop_integration() {
+    if (( IS_WINDOWS )); then install_windows_shortcut; return 0; fi
     local changed=0
-    write_icon | install_if_changed "$APP_DIR/assets/theia.svg" || true
+    write_icon | install_if_changed "$APP_DIR/assets/chrysa.svg" || true
     if write_icon | install_if_changed "$ICON_FILE"; then
         changed=1
         if command -v gtk-update-icon-cache >/dev/null 2>&1; then
@@ -442,10 +593,11 @@ check_libvlc
 check_ffmpeg
 check_qt
 install_desktop_integration
+ask_desktop_shortcut
 
 # libVLC renders into an X11 window. Forcing Qt onto X11 (XWayland in a Wayland
 # session) keeps the video embedded instead of popping out into its own window.
-export QT_QPA_PLATFORM=xcb
+if (( ! IS_WINDOWS )); then export QT_QPA_PLATFORM=xcb; fi
 
 if (( SETUP_ONLY )); then
     log "Setup complete. Start $APP_NAME with ./run.sh or from the application launcher."
@@ -456,6 +608,6 @@ trap - ERR
 if (( ! INTERACTIVE )) && (( ${#APP_ARGS[@]} == 0 )); then
     # Started from the launcher: keep the last run's output for troubleshooting.
     mkdir -p "$DATA_DIR"
-    exec "$VENV_DIR/bin/python" -m theia >"$DATA_DIR/theia.log" 2>&1
+    exec "$VENV_PY" -m chrysa >"$DATA_DIR/chrysa.log" 2>&1
 fi
-exec "$VENV_DIR/bin/python" -m theia "${APP_ARGS[@]}"
+exec "$VENV_PY" -m chrysa "${APP_ARGS[@]}"

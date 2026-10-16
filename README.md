@@ -1,4 +1,4 @@
-# Theia
+# Chrysa
 
 An offline, open-source media center for the movies and TV shows already on your disk.
 Dark Netflix-style interface, embedded player (libVLC), automatic resume, and no
@@ -9,7 +9,7 @@ network access at any point: artwork is grabbed from the videos themselves.
 ```
 
 That one command installs what is missing, builds the Python environment, adds
-**Theia** to your application launcher and starts the app. Later launches take the
+**Chrysa** to your application launcher and starts the app. Later launches take the
 same path and start in a fraction of a second.
 
 ## What it does
@@ -35,12 +35,20 @@ same path and start in a fraction of a second.
 - **Resume everywhere** — the position is written to SQLite every 3 seconds and
   immediately on pause or exit. Opening a partly watched item continues from that
   spot (*Start Over* is in the player and the right-click menu).
-- **Watch log that follows you between systems** — on first launch Theia asks where to
-  keep `theia-watch-log.json`, a small file recording which movie you stopped in and
+- **Watch log that follows you between systems** — on first launch Chrysa asks where to
+  keep `chrysa-watch-log.json`, a small file recording which movie you stopped in and
   which episode of which season you left off at. Point both systems of a dual boot at
   the same folder and progress is merged silently at start-up and after every scan
   (newest wins; entries are matched by title and season/episode, not file path).
   *Change log location* in the sidebar moves it.
+- **Search & Download mode (work in progress)** — the online browsing feature is in the
+  works and is not complete yet; expect missing pieces and rough edges. The switch at the top of the sidebar. Right (default) is
+  the normal offline library; left hides it and opens a search view. Nothing touches the
+  network until you press *Allow Internet Access*. Results (↑/↓ to move, Enter or click
+  to select) come from the Internet Archive; press **D** on the highlighted result to
+  download its torrent in the background to `~/Downloads`. Downloading needs a
+  BitTorrent engine: `aria2` (`sudo apt install aria2`) or the `libtorrent` Python
+  bindings. Ctrl+D flips between the two modes.
 - **Offline thumbnails** — a `poster.jpg` / `cover.jpg` / `folder.jpg` next to a video
   is used if present; otherwise ffmpeg grabs a frame 15 % into the file (retrying
   further in if that frame is black) and caches it.
@@ -68,7 +76,12 @@ same path and start in a fraction of a second.
 
 ## Requirements
 
-Linux with X11 or Wayland (Theia runs through XWayland so the video stays inside the
+**Windows 10/11 (64-bit):** double-click `run.bat` (or run `./run.sh` in Git Bash). It
+installs 64-bit Python, VLC and FFmpeg with `winget` when they are missing or 32-bit,
+builds `.venv` and adds a Start menu entry. At the end every OS is asked once whether to
+create a desktop shortcut (`--ask-shortcut` asks again).
+
+**Linux** with X11 or Wayland (Chrysa runs through XWayland so the video stays inside the
 window). `run.sh` installs these when they are missing and asks for `sudo` only then:
 
 | | Debian / Ubuntu | Fedora | Arch |
@@ -81,12 +94,12 @@ window). `run.sh` installs these when they are missing and asks for `sudo` only 
 Python packages (installed into `.venv`): PyQt6, python-vlc, guessit.
 
 `run.sh` options: `--setup-only` (prepare everything, do not start),
-`--skip-system-deps` (never touch system packages), and any Theia option below.
+`--skip-system-deps` (never touch system packages), and any Chrysa option below.
 
 ## Command line
 
 ```
-./run.sh --scan --list          # rescan and print what Theia found, no window
+./run.sh --scan --list          # rescan and print what Chrysa found, no window
 ./run.sh --thumbnails           # pre-generate every thumbnail
 ./run.sh --add-folder /mnt/media
 ```
@@ -95,12 +108,12 @@ Python packages (installed into `.venv`): PyQt6, python-vlc, guessit.
 
 | | |
 | --- | --- |
-| `~/.local/share/theia/theia.db` | library, watch progress, settings (SQLite) |
-| `~/.local/share/theia/thumbnails/` | cached frame grabs |
-| `~/.local/share/theia/theia.log` | output of the last launch from the app menu |
-| `~/.local/share/applications/theia.desktop` | launcher entry (rewritten by `run.sh`) |
+| `~/.local/share/chrysa/chrysa.db` | library, watch progress, settings (SQLite) |
+| `~/.local/share/chrysa/thumbnails/` | cached frame grabs |
+| `~/.local/share/chrysa/chrysa.log` | output of the last launch from the app menu |
+| `~/.local/share/applications/chrysa.desktop` | launcher entry (rewritten by `run.sh`) |
 
-Theia never writes into your media folders. Renaming or moving a video keeps its
+Chrysa never writes into your media folders. Renaming or moving a video keeps its
 watch progress (files are recognised by size and name). If a library folder is on a
 drive that is not connected, its entries are kept rather than deleted.
 
@@ -122,11 +135,11 @@ image with the same name as an episode next to it.
 ## Troubleshooting
 
 - **Green or garbled picture** — open the `⋮` menu and switch off *Hardware Video
-  Decoding* (or start with `THEIA_HWDEC=0 ./run.sh`).
+  Decoding* (or start with `CHRYSA_HWDEC=0 ./run.sh`).
 - **Something else is off with playback** — extra libVLC options can be passed with
-  `THEIA_VLC_ARGS`, e.g. `THEIA_VLC_ARGS="--verbose=2" ./run.sh`.
+  `CHRYSA_VLC_ARGS`, e.g. `CHRYSA_VLC_ARGS="--verbose=2" ./run.sh`.
 - **A title was parsed wrongly** — rename the folder to `Title (Year)` and rescan.
-- **Start from scratch** — delete `~/.local/share/theia/` (library and progress) or
+- **Start from scratch** — delete `~/.local/share/chrysa/` (library and progress) or
   `.venv/` (Python environment); `run.sh` rebuilds both.
 
 ## Development
@@ -136,7 +149,8 @@ image with the same name as an episode next to it.
 ```
 
 ```
-theia/
+chrysa/
+  search.py      online search providers       downloads.py   background torrent client
   config.py      paths and thresholds          naming.py      guessit glue and sanity checks
   scanner.py     folder walk + classification  probe.py       ffprobe
   database.py    SQLite schema, connections    library.py     sync, queries, resume logic

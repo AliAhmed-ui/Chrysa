@@ -5,7 +5,7 @@ import unittest
 from unittest import mock
 
 from tests.helpers import MB, LibraryCase, make_tree
-from theia import subtitles
+from chrysa import subtitles
 
 
 class FetchMissing(LibraryCase):

@@ -15,9 +15,9 @@ try:
     from PyQt6.QtCore import QEventLoop, QTimer
     from PyQt6.QtWidgets import QApplication
 
-    from theia.ui import theme
-    from theia.ui.main_window import MainWindow
-    from theia.ui.pages import season_name
+    from chrysa.ui import theme
+    from chrysa.ui.main_window import MainWindow
+    from chrysa.ui.pages import season_name
 
     HAVE_QT = True
 except ImportError:  # pragma: no cover - PyQt6 is a hard requirement of the app itself
@@ -30,7 +30,7 @@ GB = 1024 * MB
 class BrowsingWindow(LibraryCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication(["theia-tests"])
+        cls.app = QApplication.instance() or QApplication(["chrysa-tests"])
         theme.apply(cls.app)
 
     def setUp(self):
@@ -139,7 +139,7 @@ class BrowsingWindow(LibraryCase):
         self.assertEqual(self.titles(window.home.shows_row), [])
 
     def test_cycling_themes_restyles_everything_and_persists(self):
-        from theia.ui.themes import THEMES
+        from chrysa.ui.themes import THEMES
 
         window = self.window
         start = theme.manager.current_theme_key
@@ -169,8 +169,8 @@ class BrowsingWindow(LibraryCase):
         from PyQt6.QtCore import QRectF
         from PyQt6.QtGui import QColor, QImage, QPainter
 
-        from theia.ui import backdrop as bd
-        from theia.ui.themes import THEMES
+        from chrysa.ui import backdrop as bd
+        from chrysa.ui.themes import THEMES
 
         start = theme.manager.current_theme_key
         self.addCleanup(theme.manager.set_theme, start)

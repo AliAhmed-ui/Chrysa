@@ -1,7 +1,7 @@
 """The media library: syncing scans into SQLite, browsing queries, playback state.
 
 Everything here is UI-agnostic and safe to call from any thread (each thread
-uses its own SQLite connection, see :mod:`theia.database`).
+uses its own SQLite connection, see :mod:`chrysa.database`).
 """
 
 from __future__ import annotations
@@ -554,7 +554,7 @@ class Library:
             try:
                 fresh.save()
             except OSError as error:
-                return False, f"Theia cannot write to that folder: {error.strerror or error}"
+                return False, f"Chrysa cannot write to that folder: {error.strerror or error}"
             self.set_setting(WATCH_LOG_SETTING, str(fresh.directory))
             self._log = fresh
         applied = self.sync_watch_log()

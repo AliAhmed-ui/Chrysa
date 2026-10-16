@@ -5,7 +5,7 @@ import unittest
 from collections import Counter
 
 from tests.helpers import MB, TempDirCase, make_tree
-from theia.scanner import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Scanner
+from chrysa.scanner import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Scanner
 
 GB = 1024 * MB
 

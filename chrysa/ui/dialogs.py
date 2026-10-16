@@ -24,7 +24,7 @@ from ..models import plural
 
 
 class FoldersDialog(QDialog):
-    """Add or remove the folders Theia scans. ``changed`` tells the caller to rescan."""
+    """Add or remove the folders Chrysa scans. ``changed`` tells the caller to rescan."""
 
     def __init__(self, library: Library, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -37,7 +37,7 @@ class FoldersDialog(QDialog):
         title = QLabel("Library Folders")
         title.setObjectName("dialogTitle")
         hint = QLabel(
-            "Theia looks for movies, TV shows and other videos in these folders, including "
+            "Chrysa looks for movies, TV shows and other videos in these folders, including "
             "everything inside them. Nothing on disk is ever modified."
         )
         hint.setObjectName("hint")
@@ -104,7 +104,7 @@ class FoldersDialog(QDialog):
         answer = QMessageBox.question(
             self, "Remove folder",
             f"Remove this folder from the library?\n\n{path}\n\n"
-            "The files stay on disk, but Theia forgets how far you watched them.",
+            "The files stay on disk, but Chrysa forgets how far you watched them.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )

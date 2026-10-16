@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 
 from tests.helpers import MB, LibraryCase, make_tree
-from theia.config import Paths
-from theia.library import Library
-from theia.watchlog import FILENAME, WatchLog
+from chrysa.config import Paths
+from chrysa.library import Library
+from chrysa.watchlog import FILENAME, WatchLog
 
 GB = 1024 * MB
 

@@ -6,10 +6,10 @@ import time
 import unittest
 
 from tests.helpers import MB, LibraryCase, make_tree
-from theia.config import FINISHED_FRACTION, MIN_PLAYED_SECONDS
-from theia.library import THUMB_FAILED, THUMB_PENDING, THUMB_READY, final_kind, next_up
-from theia.models import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Media, format_clock, format_duration
-from theia.scanner import ScannedVideo
+from chrysa.config import FINISHED_FRACTION, MIN_PLAYED_SECONDS
+from chrysa.library import THUMB_FAILED, THUMB_PENDING, THUMB_READY, final_kind, next_up
+from chrysa.models import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Media, format_clock, format_duration
+from chrysa.scanner import ScannedVideo
 
 GB = 1024 * MB
 

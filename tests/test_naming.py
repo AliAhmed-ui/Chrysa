@@ -1,8 +1,8 @@
-"""Release-name parsing: the guessit glue in theia.naming."""
+"""Release-name parsing: the guessit glue in chrysa.naming."""
 
 import unittest
 
-from theia import naming
+from chrysa import naming
 
 
 class MovieNames(unittest.TestCase):

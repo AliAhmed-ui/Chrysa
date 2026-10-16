@@ -31,10 +31,12 @@ from ..library import Library
 from ..models import Media, ScanSummary, Show, format_clock
 from . import icons, theme
 from .dialogs import FoldersDialog
+from .download_view import DownloadPage
 from .images import ImageLoader
 from .pages import GridPage, HomePage, SearchPage, ShowPage
 from .player import PlayerPage
 from .services import ScanWorker, SubtitleWorker, ThumbnailService
+from .toggle import ModeSwitch
 from .widgets import BrandLabel, CardModel, MediaCard, movie_card, show_card
 
 
@@ -184,7 +186,7 @@ class Sidebar(QWidget):
         layout.addWidget(self.fetch_subtitles)
         self.log_location = self._action(
             "folder", "Change log location",
-            "Choose the folder where Theia keeps your watch log (what you were watching and where you stopped)",
+            "Choose the folder where Chrysa keeps your watch log (what you were watching and where you stopped)",
         )
         self.log_location.clicked.connect(self.logLocationRequested)
         layout.addWidget(self.log_location)
@@ -292,9 +294,27 @@ class MainWindow(QMainWindow):
         self.root = QStackedWidget()
         self.root.addWidget(self.browser)
         self.root.addWidget(self.player)
-        self.setCentralWidget(self.root)
+        self.download_page = DownloadPage()
+        self.root.addWidget(self.download_page)
+        self.mode_switch = ModeSwitch()
+        self.mode_bar = QWidget()
+        self.mode_bar.setObjectName("browser")
+        bar = QHBoxLayout(self.mode_bar)
+        bar.setContentsMargins(0, 12, 0, 6)
+        bar.addStretch(1)
+        bar.addWidget(self.mode_switch)
+        bar.addStretch(1)
+        central = QWidget()
+        column = QVBoxLayout(central)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        column.addWidget(self.mode_bar)
+        column.addWidget(self.root, 1)
+        self.root.currentChanged.connect(lambda _i: self.mode_bar.setVisible(self.root.currentWidget() is not self.player))
+        self.setCentralWidget(central)
 
         self.top_bar.navigate.connect(self.show_tab)
+        self.mode_switch.toggle.toggled.connect(self.set_library_mode)
         self.top_bar.searchChanged.connect(self._search)
         self.top_bar.rescanRequested.connect(lambda: self.rescan(manual=True))
         self.top_bar.addFolderRequested.connect(self.add_folder)
@@ -336,6 +356,20 @@ class MainWindow(QMainWindow):
         bind("F11", lambda: self.showNormal() if self.isFullScreen() else self.showFullScreen())
         bind("Ctrl+T", self.change_theme)
         bind("Ctrl+Q", self.close)
+        bind("Ctrl+D", lambda: self.set_library_mode(False))
+        shortcut = QShortcut(QKeySequence("Ctrl+D"), self.download_page)
+        shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        shortcut.activated.connect(lambda: self.set_library_mode(True))
+
+    def set_library_mode(self, library: bool) -> None:
+        """Right (True): the standard interface. Left (False): Search & Download."""
+        self.mode_switch.toggle.set_checked_silently(library)
+        self.mode_switch.apply_theme()
+        if library:
+            self.root.setCurrentWidget(self.browser)
+        else:
+            self.root.setCurrentWidget(self.download_page)
+            self.download_page.focus_search()
 
     # --------------------------------------------------------------- theme
 
@@ -609,13 +643,13 @@ class MainWindow(QMainWindow):
         default = str(self.library.paths.data_dir)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle("Where should Theia keep your watch log?")
-        box.setText("<b>Where should Theia keep your watch log?</b>")
+        box.setWindowTitle("Where should Chrysa keep your watch log?")
+        box.setText("<b>Where should Chrysa keep your watch log?</b>")
         box.setInformativeText(
             "The log records which movie you stopped in and which episode of which season you "
             "left off at, for Continue Watching.\n\n"
             "Pick a folder both systems can read (for example a shared data partition) and "
-            "Theia will keep your progress in sync between them automatically.\n\n"
+            "Chrysa will keep your progress in sync between them automatically.\n\n"
             f"If you skip this, the log is kept in {default}. You can change it any time with "
             "Change log location."
         )
@@ -633,7 +667,7 @@ class MainWindow(QMainWindow):
 
     def _pick_log_location(self, start: str) -> bool:
         """Let the user choose the log folder; True if one was chosen and accepted."""
-        chosen = QFileDialog.getExistingDirectory(self, "Choose the folder for the Theia watch log", start)
+        chosen = QFileDialog.getExistingDirectory(self, "Choose the folder for the Chrysa watch log", start)
         if not chosen:
             return False
         ok, message = self.library.set_watch_log_dir(chosen)
@@ -719,6 +753,7 @@ class MainWindow(QMainWindow):
         if self.player.is_active:
             self.player.close_player()  # saves the position and leaves fullscreen
         self.player.shutdown()
+        self.download_page.shutdown()
         self.library.set_setting("window_geometry", bytes(self.saveGeometry().toBase64()).decode())
         if self._scan is not None:
             self._scan.requestInterruption()

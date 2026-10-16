@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 import time
 from pathlib import Path
 
@@ -372,7 +373,7 @@ class PlayerPage(QWidget):
                 "--quiet",
                 "--no-sub-autodetect-file",  # external subtitles are attached explicitly
                 "--mouse-hide-timeout=2000000000",  # the cursor is hidden by Qt, not by VLC
-                *shlex.split(os.environ.get("THEIA_VLC_ARGS", "")),
+                *shlex.split(os.environ.get("CHRYSA_VLC_ARGS", "")),
             ]
             instance = vlc.Instance(arguments)
             if instance is None:
@@ -383,7 +384,7 @@ class PlayerPage(QWidget):
             player.video_set_key_input(False)
         except Exception as error:
             QMessageBox.critical(
-                self.window(), "Theia",
+                self.window(), "Chrysa",
                 "The video player could not be started.\n\n"
                 f"{error}\n\nIs VLC installed? Run ./run.sh in a terminal to install it, or use your package manager "
                 "(apt: vlc libvlc-dev · pacman: vlc vlc-plugins-all · dnf: vlc from RPM Fusion).",
@@ -400,7 +401,7 @@ class PlayerPage(QWidget):
         """Start playing *media*, resuming where it was left unless ``from_start``."""
         if not os.path.isfile(media.path):
             QMessageBox.warning(
-                self.window(), "Theia",
+                self.window(), "Chrysa",
                 f"This file is not available right now:\n\n{media.path}\n\n"
                 "If it lives on an external drive, connect the drive and try again.",
             )
@@ -413,7 +414,7 @@ class PlayerPage(QWidget):
         item = self._vlc.media_new_path(media.path)
         if start > 0:
             item.add_option(f":start-time={start:.3f}")
-        hardware = self._library.flag("hardware_decoding", True) and os.environ.get("THEIA_HWDEC", "1") != "0"
+        hardware = self._library.flag("hardware_decoding", True) and os.environ.get("CHRYSA_HWDEC", "1") != "0"
         if not hardware:
             # set_xwindow() resets libVLC's instance-wide --avcodec-hw, so it has to be per media.
             item.add_option(":avcodec-hw=none")
@@ -430,7 +431,10 @@ class PlayerPage(QWidget):
         self._has_history = media.last_watched is not None
 
         self._player.set_media(item)
-        self._player.set_xwindow(int(self.surface.winId()))
+        if sys.platform == "win32":
+            self._player.set_hwnd(int(self.surface.winId()))
+        else:
+            self._player.set_xwindow(int(self.surface.winId()))
         # Make sure both bars are real X11 windows stacked above the video surface.
         self.top_bar.winId()
         self.controls.winId()
@@ -560,7 +564,7 @@ class PlayerPage(QWidget):
         self._ended = True  # nothing sensible to save
         self._finish_current()
         QMessageBox.warning(
-            self.window(), "Theia", f"This file could not be played:\n\n{media.path if media else ''}"
+            self.window(), "Chrysa", f"This file could not be played:\n\n{media.path if media else ''}"
         )
         self.close_player()
 

@@ -3,7 +3,7 @@
 Releases ship subtitles in two ways: next to the video with the same file name
 (``Heat.1995.srt``), or in a ``Subs`` folder with names like ``SDH.eng.HI.srt``
 or ``Latin American.spa.srt``. libVLC only auto-loads the former and calls every
-external track "Track 1", so Theia discovers them itself and labels them.
+external track "Track 1", so Chrysa discovers them itself and labels them.
 """
 
 from __future__ import annotations

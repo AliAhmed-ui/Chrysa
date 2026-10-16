@@ -1,6 +1,6 @@
 """Headless commands: scan the library, list it, pre-build thumbnails.
 
-These run without a display, which makes them handy for checking what Theia
+These run without a display, which makes them handy for checking what Chrysa
 makes of a folder (``./run.sh --scan --list``) and for tests.
 """
 
@@ -20,9 +20,9 @@ from .thumbnails import PRIORITY_BACKGROUND, PRIORITY_HOME, ThumbnailWorkers
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="theia", description="Theia — an offline media center for local movies and TV shows."
+        prog="chrysa", description="Chrysa — an offline media center for local movies and TV shows."
     )
-    parser.add_argument("--version", action="version", version=f"Theia {__version__}")
+    parser.add_argument("--version", action="version", version=f"Chrysa {__version__}")
     parser.add_argument(
         "--add-folder", metavar="DIR", action="append", default=[],
         help="add DIR to the library (may be repeated)",
