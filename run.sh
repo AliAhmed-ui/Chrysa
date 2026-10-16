@@ -139,6 +139,13 @@ find_python() {
     return 1
 }
 
+# PyGObject (media-key support) is built from source; it needs the GObject-introspection
+# headers, which are named libgirepository-2.0-dev on newer Debian/Ubuntu and -1.0- on older ones.
+girepository_dev_package() {
+    if apt-cache show libgirepository-2.0-dev >/dev/null 2>&1; then echo libgirepository-2.0-dev
+    else echo libgirepository1.0-dev; fi
+}
+
 # Print the packages that still need installing, one per line.
 missing_packages() {
     local pkg
@@ -149,7 +156,8 @@ missing_packages() {
             for pkg in vlc ffmpeg python3 python3-venv python3-pip \
                     libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
                     libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libegl1 libgl1 \
-                    libfontconfig1 libdbus-1-3 libnotify-bin; do
+                    libfontconfig1 libdbus-1-3 libnotify-bin \
+                    pkg-config python3-dev libcairo2-dev "$(girepository_dev_package)"; do
                 # Multi-arch libraries print one line per architecture, hence grep.
                 dpkg-query -W -f='${db:Status-Status}\n' "$pkg" 2>/dev/null | grep -qx installed || echo "$pkg"
             done ;;

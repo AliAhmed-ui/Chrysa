@@ -35,6 +35,7 @@ from ..library import Library
 from ..models import Media, format_clock
 from ..subtitles import ExternalSubtitle, find_external_subtitles
 from . import icons, theme
+from .. import mpris
 
 _TICK_MS = 200
 _HIDE_AFTER_MS = 2500
@@ -254,6 +255,7 @@ class PlayerPage(QWidget):
         self._volume_saver.setSingleShot(True)
         self._volume_saver.setInterval(400)
         self._volume_saver.timeout.connect(self._store_volume)
+        mpris.start(self)  # media keys and Bluetooth buttons, once the GUI is built
 
     # ------------------------------------------------------------ building
 
@@ -580,6 +582,35 @@ class PlayerPage(QWidget):
         if playing:
             self._save_progress()  # save immediately on pause
         self._show_hud("❚❚" if playing else "▶")
+
+    @property
+    def playback_status(self) -> str:
+        """MPRIS PlaybackStatus. Read from the D-Bus thread, so it only peeks at libVLC."""
+        player, vlc = self._player, self._vlc_module
+        if self._media is None or player is None:
+            return "Stopped"
+        try:
+            state = player.get_state()
+        except Exception:
+            return "Stopped"
+        if state == vlc.State.Paused:
+            return "Paused"
+        if state in (vlc.State.Playing, vlc.State.Opening, vlc.State.Buffering):
+            return "Playing"
+        return "Stopped"
+
+    def handle_media_command(self, command: str) -> None:
+        """Run an MPRIS command (delivered to the GUI thread by a queued signal)."""
+        if command == "stop":
+            if self._media is not None:
+                self.close_player()
+        elif command == "next":
+            self.play_next()
+        elif command == "previous":
+            self.restart()  # there is no previous-episode navigation: start this one over
+        elif self._media is not None:
+            if command == "playpause" or (command == "pause") == (self.playback_status == "Playing"):
+                self.toggle_pause()
 
     def _set_play_icon(self, playing: bool) -> None:
         if playing != self._icon_shows_pause:
