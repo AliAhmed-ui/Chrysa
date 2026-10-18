@@ -1,7 +1,7 @@
 """Online search for downloadable videos. Pluggable: a provider turns a query into results.
 
-The bundled provider searches the Internet Archive (public-domain and freely
-licensed films, each with an official torrent). Other providers can be added by
+Bundled providers: torrent indexes (via :mod:`chrysa.bd`) and the Internet Archive
+(public-domain and freely licensed films, each with an official torrent). Other providers can be added by
 subclassing :class:`SearchProvider` and listing them in :data:`PROVIDERS`.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 USER_AGENT = "Chrysa (offline media center)"
@@ -76,18 +77,47 @@ class InternetArchiveProvider(SearchProvider):
         return results
 
 
-PROVIDERS: list[SearchProvider] = [InternetArchiveProvider()]
+class TorrentSourcesProvider(SearchProvider):
+    """YTS, The Pirate Bay, 1337x, EZTV, Nyaa, SubsPlease and BitTorrented, via :mod:`chrysa.bd`."""
+
+    name = "Torrent sources"
+
+    def search(self, query: str, limit: int = 50) -> list[SearchResult]:
+        from . import bd
+
+        try:
+            found = bd.search_all(query)
+        except Exception as error:  # bd isolates each source, but never let one bug hide other providers
+            raise SearchError(f"Torrent search failed: {error}") from error
+        return [
+            SearchResult(
+                item["name"],
+                f"[{item['source']}] {bd.human(item['size'])} · Seeders: {item['seeders']} · Leechers: {item['leechers']}",
+                item["magnet"],
+            )
+            for item in found[:limit]
+        ]
+
+
+PROVIDERS: list[SearchProvider] = [TorrentSourcesProvider(), InternetArchiveProvider()]
 
 
 def search(query: str, limit: int = 50) -> list[SearchResult]:
     """Run *query* against every provider; one provider failing does not hide the others."""
+    def run(provider: SearchProvider) -> list[SearchResult] | str:
+        try:
+            return provider.search(query, limit)
+        except SearchError as error:
+            return str(error)
+
     results: list[SearchResult] = []
     errors: list[str] = []
-    for provider in PROVIDERS:
-        try:
-            results.extend(provider.search(query, limit))
-        except SearchError as error:
-            errors.append(str(error))
+    with ThreadPoolExecutor(len(PROVIDERS)) as pool:  # providers run side by side, results keep provider order
+        for outcome in pool.map(run, PROVIDERS):
+            if isinstance(outcome, str):
+                errors.append(outcome)
+            else:
+                results.extend(outcome)
     if errors and not results:
         raise SearchError("; ".join(errors))
     return results

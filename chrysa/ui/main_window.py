@@ -31,6 +31,7 @@ from ..library import Library
 from ..models import Media, ScanSummary, Show, format_clock
 from . import icons, theme
 from .dialogs import FoldersDialog
+from ..downloads import DEFAULT_DIR as DEFAULT_DOWNLOAD_DIR
 from .download_view import DownloadPage
 from .images import ImageLoader
 from .pages import GridPage, HomePage, SearchPage, ShowPage
@@ -245,6 +246,8 @@ class Sidebar(QWidget):
             button.setChecked(name == key)
         self._tabs.setExclusive(True)
 
+DOWNLOAD_DIR_SETTING = "download.dir"
+
 
 class MainWindow(QMainWindow):
     def __init__(self, library: Library) -> None:
@@ -294,7 +297,11 @@ class MainWindow(QMainWindow):
         self.root = QStackedWidget()
         self.root.addWidget(self.browser)
         self.root.addWidget(self.player)
-        self.download_page = DownloadPage()
+        self.download_page = DownloadPage(state_file=library.paths.data_dir / "downloads.json")
+        saved_dir = self.library.setting(DOWNLOAD_DIR_SETTING)
+        if saved_dir:
+            self.download_page.set_download_dir(saved_dir)
+        self.download_page.changeFolderRequested.connect(self.change_download_dir)
         self.root.addWidget(self.download_page)
         self.mode_switch = ModeSwitch()
         self.mode_bar = QWidget()
@@ -369,7 +376,29 @@ class MainWindow(QMainWindow):
             self.root.setCurrentWidget(self.browser)
         else:
             self.root.setCurrentWidget(self.download_page)
+            self.ask_download_dir_if_needed()
             self.download_page.focus_search()
+
+    def ask_download_dir_if_needed(self) -> None:
+        """First time in Browse: ask where downloads should go (cancelling keeps ~/Downloads)."""
+        if self.library.setting(DOWNLOAD_DIR_SETTING):
+            return
+        if not self._pick_download_dir(str(DEFAULT_DOWNLOAD_DIR)):
+            self._store_download_dir(DEFAULT_DOWNLOAD_DIR)
+
+    def change_download_dir(self) -> None:
+        self._pick_download_dir(str(self.download_page.client.directory))
+
+    def _pick_download_dir(self, start: str) -> bool:
+        chosen = QFileDialog.getExistingDirectory(self, "Choose where downloads are saved", start)
+        if chosen:
+            self._store_download_dir(chosen)
+            self._set_status(f"Downloads will be saved to {chosen}", 6000)
+        return bool(chosen)
+
+    def _store_download_dir(self, directory) -> None:
+        self.library.set_setting(DOWNLOAD_DIR_SETTING, str(directory))
+        self.download_page.set_download_dir(directory)
 
     # --------------------------------------------------------------- theme
 

@@ -41,14 +41,16 @@ same path and start in a fraction of a second.
   the same folder and progress is merged silently at start-up and after every scan
   (newest wins; entries are matched by title and season/episode, not file path).
   *Change log location* in the sidebar moves it.
-- **Search & Download mode (work in progress)** — the online browsing feature is in the
-  works and is not complete yet; expect missing pieces and rough edges. The switch at the top of the sidebar. Right (default) is
-  the normal offline library; left hides it and opens a search view. Nothing touches the
-  network until you press *Allow Internet Access*. Results (↑/↓ to move, Enter or click
-  to select) come from the Internet Archive; press **D** on the highlighted result to
-  download its torrent in the background to `~/Downloads`. Downloading needs a
-  BitTorrent engine: `aria2` (`sudo apt install aria2`) or the `libtorrent` Python
-  bindings. Ctrl+D flips between the two modes.
+- **Browse (Search & Download)** — the switch at the top of the window. Right (default) is
+  the normal offline library; left opens Browse. Nothing touches the network until you press
+  *Allow Internet Access*. The first time, Chrysa asks where to save downloads (*Change download
+  folder* changes it). Searching queries YTS, The Pirate Bay, 1337x, EZTV, Nyaa, SubsPlease,
+  BitTorrented and the Internet Archive (`chrysa/bd.py`, also usable alone: `python3 bd.py "query"`).
+  Results (↑/↓, Enter or click) are sorted by seeders; press **D** to download. Each download has a
+  progress bar with size, speed, ETA and peers. Select one and press **C** to cancel it and delete
+  its partial files. Unfinished downloads are saved when you quit and resume after you press *Allow
+  Internet Access* next time. Downloading uses `aria2` (installed by `run.sh`) or the `libtorrent`
+  Python bindings. Ctrl+D flips between the two modes. Only download what you have the right to.
 - **Offline thumbnails** — a `poster.jpg` / `cover.jpg` / `folder.jpg` next to a video
   is used if present; otherwise ffmpeg grabs a frame 15 % into the file (retrying
   further in if that frame is black) and caches it.

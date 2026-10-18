@@ -55,6 +55,8 @@ _ICONS = {
     "library": f'<g {_STROKE}><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16"/></g>',
     "tv": f'<g {_STROKE}><rect x="2.5" y="7" width="19" height="14" rx="2.5"/><path d="M16.5 2.5L12 7 7.5 2.5"/></g>',
     "clock": f'<g {_STROKE}><circle cx="12" cy="12" r="9.5"/><path d="M12 6.5V12l3.5 2"/></g>',
+    "disc": f'<g {_STROKE}><circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="12" r="2.6"/>'
+            '<path d="M12 5.8a6.2 6.2 0 0 1 6.2 6.2"/></g>',
     "film": f'<g {_STROKE}><rect x="3.5" y="4.5" width="17" height="15" rx="2"/>'
             '<path d="M8 4.5v15M16 4.5v15M3.5 9.5H8M3.5 14.5H8M16 9.5h4.5M16 14.5h4.5"/></g>',
 }

@@ -233,6 +233,15 @@ QListWidget {{
 }}
 QListWidget::item {{ padding: 10px 12px; border-bottom: 1px solid {BORDER}; }}
 QListWidget::item:selected {{ background: {ALT_SOFT}; color: {TEXT}; }}
+QListWidget#downloadList::item {{ padding: 0; }}
+QWidget#downloadRow {{ background: transparent; }}
+QLabel#downloadTitle {{ font-size: 14px; font-weight: 600; color: {TEXT}; background: transparent; }}
+QLabel#downloadSpeed {{ font-size: 12px; font-weight: 600; color: {ACCENT_ALT}; background: transparent; }}
+QProgressBar#downloadBar {{
+    background: {SURFACE_RAISED}; border: 1px solid {BORDER}; border-radius: 9px;
+    color: {TEXT}; font-size: 11px; font-weight: 600; text-align: center;
+}}
+QProgressBar#downloadBar::chunk {{ background: {ACCENT}; border-radius: 8px; }}
 QLabel#dialogTitle {{ font-size: 20px; font-weight: 700; }}
 QMessageBox {{ background: {SURFACE}; }}
 QMessageBox QLabel {{ color: {TEXT_SOFT}; font-size: 14px; }}
@@ -300,10 +309,10 @@ def ui_font(pixel_size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFon
 
 
 def app_icon() -> QIcon:
-    """The Chrysa icon: the SVG written by run.sh if present, else a painted stand-in."""
+    """The Chrysa icon: the PNG shipped in assets/ if present, else a painted stand-in."""
     candidates = (
-        Path(__file__).resolve().parents[2] / "assets" / "chrysa.svg",
-        Path.home() / ".local/share/icons/hicolor/scalable/apps/chrysa.svg",
+        Path(__file__).resolve().parents[2] / "assets" / "chrysa.png",
+        Path.home() / ".local/share/icons/hicolor/512x512/apps/chrysa.png",
     )
     for candidate in candidates:
         if candidate.is_file():

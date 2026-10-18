@@ -1,5 +1,6 @@
 """Search & Download mode: toggle, view behaviour, key bindings, search parsing and the download client."""
 
+import json
 import os
 import tempfile
 import threading
@@ -72,6 +73,74 @@ class DownloadClient(unittest.TestCase):
             self.assertTrue(done.wait(5))
         self.assertEqual(seen, ["finished"])
         self.assertIsNot(ran_on[0], threading.main_thread())
+
+    def test_parses_aria2_summary(self):
+        line = "[#78dfa0 1.5MiB/1.9GiB(0%) CN:3 SD:1 DL:2.1MiB ETA:12m3s]"
+        m = downloads._SUMMARY.search(line)
+        self.assertEqual(downloads.parse_bytes(m.group(1)), int(1.5 * 1024 * 1024))
+        self.assertEqual((m.group(3), m.group(6)), ("3", "12m3s"))
+        self.assertIsNone(downloads._SUMMARY.search("FileAlloc:#78dfa0 1.5GiB/1.9GiB(76%)"))
+
+    def test_unfinished_downloads_survive_shutdown(self):
+        state = Path(tempfile.mkdtemp()) / "downloads.json"
+        gate = threading.Event()
+
+        def hold(self, download):
+            self._emit(download, state="downloading")
+            download._stop.wait(5)
+            self._emit(download, state="cancelled")
+            gate.set()
+
+        with mock.patch.object(downloads, "available_backend", return_value="aria2c"), \
+                mock.patch.object(downloads.DownloadClient, "_run_aria2", hold):
+            client = downloads.DownloadClient(Path(tempfile.mkdtemp()), state_file=state)
+            client.start("magnet:?xt=urn:btih:abc", "Movie")
+            client.start("magnet:?xt=urn:btih:def", "Dropped").cancel()
+            client.shutdown()
+            self.assertTrue(gate.wait(5))
+        (entry,) = downloads.DownloadClient(Path("."), state_file=state).saved()
+        self.assertEqual((entry["target"], entry["name"]), ("magnet:?xt=urn:btih:abc", "Movie"))
+
+    def test_cancel_deletes_partial_files_only_inside_the_folder(self):
+        root = Path(tempfile.mkdtemp())
+        folder, outside = root / "dl", root / "keep.txt"
+        folder.mkdir()
+        outside.write_text("mine")
+        (folder / "Movie").mkdir()
+        (folder / "Movie" / "a.mkv").write_text("x")
+        (folder / "Movie.aria2").write_text("x")
+        (folder / ("a" * 40 + ".torrent")).write_text("x")
+        (folder / "Other.mkv").write_text("x")
+        downloads.remove_partial_files(folder, ["Movie", "../keep.txt", ".."], "magnet:?xt=urn:btih:" + "A" * 40)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["Other.mkv"])
+        self.assertTrue(outside.exists())
+
+    def test_cancel_and_delete_stops_download_and_forgets_it(self):
+        folder, state, done = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp()) / "d.json", threading.Event()
+        updates = []
+
+        def run(self, download):
+            (download.directory / "Movie.mkv").write_text("partial")
+            download.files.append("Movie.mkv")
+            self._emit(download, state="downloading")
+            download._stop.wait(5)
+
+        def on_update(download):
+            updates.append(download.state)
+            if download.state == "cancelled":
+                done.set()
+
+        with mock.patch.object(downloads, "available_backend", return_value="aria2c"), \
+                mock.patch.object(downloads.DownloadClient, "_run_aria2", run):
+            client = downloads.DownloadClient(folder, on_update, state)
+            download = client.start("magnet:?xt=urn:btih:abc")
+            while "downloading" not in updates:
+                threading.Event().wait(0.01)
+            client.cancel_and_delete(download)
+            self.assertTrue(done.wait(5))
+        self.assertFalse((folder / "Movie.mkv").exists())
+        self.assertEqual(client.saved(), [])
+        self.assertEqual(json.loads(state.read_text()), [])
 
     def test_backend_failure_is_reported_not_raised(self):
         done, states = threading.Event(), []
@@ -166,6 +235,10 @@ class ModeSwitch(LibraryCase):
         theme.apply(cls.app)
 
     def test_toggle_switches_views_and_stays_in_sync(self):
+        picked = tempfile.mkdtemp()
+        patcher = mock.patch("chrysa.ui.main_window.QFileDialog.getExistingDirectory", return_value=picked)
+        dialog = patcher.start()
+        self.addCleanup(patcher.stop)
         window = MainWindow(self.library)
         self.addCleanup(window.close)
         window.show()
@@ -174,9 +247,18 @@ class ModeSwitch(LibraryCase):
         self.assertTrue(toggle.isChecked())  # right = Library (default)
         toggle.click()  # to the left = Browse
         self.assertIs(window.root.currentWidget(), window.download_page)
+        self.assertEqual(dialog.call_count, 1)  # first visit asks where to download...
+        self.assertEqual(window.download_page.client.directory, Path(picked))
+        self.assertEqual(self.library.setting("download.dir"), picked)
         toggle.click()  # back to the right
         self.assertIs(window.root.currentWidget(), window.browser)
         window.set_library_mode(False)
+        self.assertEqual(dialog.call_count, 1)  # ...and never again
+        other = tempfile.mkdtemp()
+        dialog.return_value = other
+        window.download_page.folder_button.click()
+        self.assertEqual(window.download_page.client.directory, Path(other))
+        self.assertEqual(self.library.setting("download.dir"), other)
         self.assertFalse(toggle.isChecked())
         window.set_library_mode(True)
         self.assertTrue(toggle.isChecked())

@@ -4,10 +4,11 @@
 #
 #   1. detects the platform: a Linux distribution (/etc/os-release) gets missing system
 #      packages installed with apt, dnf, pacman or zypper (sudo only if something is
-#      missing); Windows 10/11 (Git Bash/MSYS2/Cygwin, or run.bat) gets Python, VLC and
-#      FFmpeg installed with winget
+#      missing); Windows 10/11 (Git Bash/MSYS2/Cygwin, or run.bat) gets Python, VLC,
+#      FFmpeg and aria2 (the torrent engine for Browse) installed with winget. All missing
+#      Linux packages go in one command, so sudo asks for the password once.
 #   2. creates .venv and installs requirements.txt (re-checked on every launch)
-#   3. Linux: writes the Chrysa icon and ~/.local/share/applications/chrysa.desktop
+#   3. Linux: installs the Chrysa icon and ~/.local/share/applications/chrysa.desktop
 #      Windows: adds a Chrysa shortcut to the Start menu
 #   4. starts Chrysa (Linux: on X11/XWayland, QT_QPA_PLATFORM=xcb)
 #
@@ -27,7 +28,7 @@ if (( IS_WINDOWS )); then VENV_BIN="$VENV_DIR/Scripts" VENV_PY="$VENV_DIR/Script
 else VENV_BIN="$VENV_DIR/bin" VENV_PY="$VENV_DIR/bin/python"; fi
 REQUIREMENTS="$APP_DIR/requirements.txt"
 DATA_DIR="$HOME/.local/share/chrysa"
-ICON_FILE="$HOME/.local/share/icons/hicolor/scalable/apps/chrysa.svg"
+ICON_FILE="$HOME/.local/share/icons/hicolor/512x512/apps/chrysa.png"
 DESKTOP_FILE="$HOME/.local/share/applications/chrysa.desktop"
 
 SETUP_ONLY=0
@@ -153,7 +154,7 @@ missing_packages() {
         apt)
             # vlc: player + libVLC; ffmpeg: thumbnails and durations; python3-venv/-pip:
             # the virtualenv; the xcb/GL/font libraries are what Qt 6's X11 plugin loads.
-            for pkg in vlc ffmpeg python3 python3-venv python3-pip \
+            for pkg in vlc ffmpeg aria2 python3 python3-venv python3-pip \
                     libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
                     libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libegl1 libgl1 \
                     libfontconfig1 libdbus-1-3 libnotify-bin \
@@ -162,7 +163,7 @@ missing_packages() {
                 dpkg-query -W -f='${db:Status-Status}\n' "$pkg" 2>/dev/null | grep -qx installed || echo "$pkg"
             done ;;
         dnf)
-            for pkg in vlc python3 python3-pip xcb-util-cursor xcb-util-image xcb-util-keysyms \
+            for pkg in vlc aria2 python3 python3-pip xcb-util-cursor xcb-util-image xcb-util-keysyms \
                     xcb-util-renderutil xcb-util-wm libxkbcommon-x11 mesa-libEGL mesa-libGL \
                     fontconfig dbus-libs libnotify; do
                 rpm -q --quiet "$pkg" 2>/dev/null || echo "$pkg"
@@ -176,7 +177,7 @@ missing_packages() {
             # Either Fedora's ffmpeg-free or RPM Fusion's ffmpeg provides the binaries.
             command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1 || echo ffmpeg-free ;;
         pacman)
-            for pkg in vlc ffmpeg python python-pip xcb-util-cursor xcb-util-image xcb-util-keysyms \
+            for pkg in vlc ffmpeg aria2 python python-pip xcb-util-cursor xcb-util-image xcb-util-keysyms \
                     xcb-util-renderutil xcb-util-wm libxkbcommon-x11 libglvnd fontconfig dbus libnotify polkit; do
                 pacman -Qq "$pkg" >/dev/null 2>&1 || echo "$pkg"
             done
@@ -185,7 +186,7 @@ missing_packages() {
                 echo vlc-plugins-all
             fi ;;
         zypper)
-            for pkg in vlc ffmpeg python3 python3-pip libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            for pkg in vlc ffmpeg aria2 python3 python3-pip libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
                     libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxkbcommon-x11-0 libEGL1 \
                     libGL1 fontconfig libnotify-tools; do
                 rpm -q --quiet "$pkg" 2>/dev/null || echo "$pkg"
@@ -263,7 +264,8 @@ find_vlc64() {
 windows_refresh_path() {
     local dir vlc
     for dir in "$LOCALAPPDATA/Microsoft/WinGet/Links" "${PROGRAMW6432:-$PROGRAMFILES}/ffmpeg/bin" \
-            "$LOCALAPPDATA"/Microsoft/WinGet/Packages/Gyan.FFmpeg*/ffmpeg-*/bin; do
+            "$LOCALAPPDATA"/Microsoft/WinGet/Packages/Gyan.FFmpeg*/ffmpeg-*/bin \
+            "$LOCALAPPDATA"/Microsoft/WinGet/Packages/aria2.aria2*/aria2-*; do
         [[ -d "$dir" ]] && PATH="$PATH:$dir"
     done
     if vlc="$(find_vlc64)"; then
@@ -277,6 +279,7 @@ windows_missing_packages() {  # prints winget package ids
     find_python >/dev/null || echo Python.Python.3.12
     find_vlc64 >/dev/null || echo VideoLAN.VLC
     command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1 || echo Gyan.FFmpeg
+    command -v aria2c >/dev/null 2>&1 || echo aria2.aria2
 }
 
 ensure_windows_dependencies() {
@@ -288,7 +291,7 @@ ensure_windows_dependencies() {
     mapfile -t missing < <(windows_missing_packages)
     (( ${#missing[@]} )) || return 0
     command -v winget >/dev/null 2>&1 \
-        || { warn "winget was not found: install ${missing[*]} yourself (64-bit Python 3.10+, 64-bit VLC, FFmpeg), then run run.sh again."; return 0; }
+        || { warn "winget was not found: install ${missing[*]} yourself (64-bit Python 3.10+, 64-bit VLC, FFmpeg, aria2), then run run.sh again."; return 0; }
     log "Missing or 32-bit: ${missing[*]} — installing the 64-bit versions with winget (Windows may ask for permission)…"
     for id in "${missing[@]}"; do
         # --force: a 32-bit copy of the same package counts as "already installed" otherwise;
@@ -309,7 +312,7 @@ ensure_system_dependencies() {
     local manager missing=() command
     manager="$(detect_package_manager)"
     if [[ "$manager" == unknown ]]; then
-        warn "Unsupported distribution: install VLC (with libVLC), FFmpeg, Python 3.10+ (venv, pip) and Qt's xcb libraries yourself."
+        warn "Unsupported distribution: install VLC (with libVLC), FFmpeg, aria2, Python 3.10+ (venv, pip) and Qt's xcb libraries yourself."
         return 0
     fi
     mapfile -t missing < <(missing_packages "$manager")
@@ -404,6 +407,11 @@ check_libvlc() {
     fi
 }
 
+check_aria2() {
+    command -v aria2c >/dev/null 2>&1 \
+        || warn "aria2c was not found: downloads in Browse need it. Install aria2 with your package manager (or winget install aria2.aria2)."
+}
+
 check_ffmpeg() {
     local tool
     for tool in ffmpeg ffprobe; do
@@ -443,35 +451,6 @@ install_if_changed() {
     fi
     chmod 644 "$tmp"
     mv -f "$tmp" "$target"
-}
-
-write_icon() {
-    cat <<'SVG'
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <title>Chrysa</title>
-  <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b2a3a"/>
-      <stop offset="1" stop-color="#04090f"/>
-    </linearGradient>
-    <radialGradient id="bloom" cx="0.5" cy="0.95" r="0.75">
-      <stop offset="0" stop-color="#22e5ff" stop-opacity="0.5"/>
-      <stop offset="0.6" stop-color="#0aa6d6" stop-opacity="0.16"/>
-      <stop offset="1" stop-color="#0aa6d6" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="glyph" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#e8fdff"/>
-      <stop offset="1" stop-color="#27d9f5"/>
-    </linearGradient>
-  </defs>
-  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#tile)"/>
-  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#bloom)"/>
-  <rect x="8.5" y="8.5" width="239" height="239" rx="57.5" fill="none" stroke="#ffffff" stroke-opacity="0.12"/>
-  <!-- a capital "C" -->
-  <path d="M182 84A66 66 0 1 0 182 172" fill="none" stroke="url(#glyph)" stroke-width="30" stroke-linecap="round"/>
-</svg>
-SVG
 }
 
 desktop_quote() {  # quote one Exec= argument per the Desktop Entry Specification
@@ -549,8 +528,7 @@ ask_desktop_shortcut() {
 install_desktop_integration() {
     if (( IS_WINDOWS )); then install_windows_shortcut; return 0; fi
     local changed=0
-    write_icon | install_if_changed "$APP_DIR/assets/chrysa.svg" || true
-    if write_icon | install_if_changed "$ICON_FILE"; then
+    if [[ -f "$APP_DIR/assets/chrysa.png" ]] && install_if_changed "$ICON_FILE" < "$APP_DIR/assets/chrysa.png"; then
         changed=1
         if command -v gtk-update-icon-cache >/dev/null 2>&1; then
             gtk-update-icon-cache -q -t -f "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
@@ -599,6 +577,7 @@ fi
 ensure_virtualenv
 check_libvlc
 check_ffmpeg
+check_aria2
 check_qt
 install_desktop_integration
 ask_desktop_shortcut
