@@ -454,6 +454,9 @@ class _ViewportPainter(QObject):
             rect = QRectF(self._viewport.rect())
             base = QColor(theme.BG)
             painter.fillRect(event.rect(), base)
+            if theme.FLAT:  # the Apple themes: a plain page, nothing painted behind the content
+                painter.end()
+                return False
             sheen = QLinearGradient(0, 0, 0, 300)
             sheen.setColorAt(0.0, QColor(theme.SURFACE))
             sheen.setColorAt(1.0, base)

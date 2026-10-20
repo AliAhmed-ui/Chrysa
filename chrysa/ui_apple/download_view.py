@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QTimer, QModelIndex, QObject, QRect, QSize, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QEvent, QTimer, QModelIndex, QObject, QRect, QRectF, QSize, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeyEvent, QPainter, QTransform
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -59,14 +59,17 @@ class ResultDelegate(QStyledItemDelegate):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = option.rect.adjusted(4, 2, -4, -2)
+        painter.setPen(Qt.PenStyle.NoPen)
         if option.state & QStyle.StateFlag.State_Selected:
-            painter.setBrush(QColor(theme.SURFACE_RAISED))
-            painter.setPen(QColor(theme.ACCENT_ALT))
-            painter.drawRoundedRect(rect, 8, 8)
+            tint = QColor(theme.ACCENT)
+            tint.setAlphaF(0.18)
+            painter.setBrush(tint)
+            painter.drawRoundedRect(rect, theme.RADIUS_S + 2, theme.RADIUS_S + 2)
         elif option.state & QStyle.StateFlag.State_MouseOver:
-            painter.setBrush(QColor(theme.SURFACE))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(rect, 8, 8)
+            hover = QColor(theme.TEXT)
+            hover.setAlphaF(0.06)
+            painter.setBrush(hover)
+            painter.drawRoundedRect(rect, theme.RADIUS_S + 2, theme.RADIUS_S + 2)
         text_rect = rect.adjusted(14, 8, -14, -8)
         title_font = QFont(option.font)
         title_font.setPixelSize(15)
@@ -99,6 +102,27 @@ class ResultList(QListWidget):
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.itemClicked.connect(lambda item: self.selectRequested.emit(item.data(RESULT_ROLE)))
+        self._empty = ("", "")  # title, detail shown while the list has no rows
+
+    def set_placeholder(self, title: str, detail: str = "") -> None:
+        self._empty = (title, detail)
+        self.viewport().update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if self.count() or not self._empty[0]:
+            return
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        area = self.viewport().rect()
+        icons.paint(painter, "search", QRectF(area.center().x() - 16, area.center().y() - 64, 32, 32), theme.TEXT_MUTED)
+        painter.setFont(theme.type_font("headline"))
+        painter.setPen(QColor(theme.TEXT_SOFT))
+        painter.drawText(QRect(0, area.center().y() - 20, area.width(), 26), Qt.AlignmentFlag.AlignCenter, self._empty[0])
+        painter.setFont(theme.type_font("callout"))
+        painter.setPen(QColor(theme.TEXT_MUTED))
+        painter.drawText(QRect(0, area.center().y() + 8, area.width(), 22), Qt.AlignmentFlag.AlignCenter, self._empty[1])
+        painter.end()
 
     def current_result(self) -> SearchResult | None:
         item = self.currentItem()
@@ -166,7 +190,8 @@ class DownloadRow(QWidget):
         self.bar = QProgressBar()
         self.bar.setObjectName("downloadBar")
         self.bar.setRange(0, 1000)
-        self.bar.setFixedHeight(18)
+        self.bar.setFixedHeight(8)
+        self.bar.setTextVisible(False)
         self.download: downloads.Download | None = None  # set while running
         self.entry: dict | None = None  # set while interrupted, awaiting restart
         self.state = QLabel("Starting…")
@@ -194,7 +219,7 @@ class DownloadRow(QWidget):
         self.bar.setValue(round(download.progress * 1000))
         self.bar.setFormat(f"{download.progress * 100:.1f}%")
         if download.state == "downloading" and download.size_total:
-            parts = [f"{human_size(download.size_done)} of {human_size(download.size_total)}"]
+            parts = [f"{download.progress * 100:.0f}%", f"{human_size(download.size_done)} of {human_size(download.size_total)}"]
             if download.peers:
                 parts.append(f"{download.peers} peers")
             if download.eta and download.speed:
@@ -255,7 +280,7 @@ class DownloadPage(QWidget):
         self.search_box = QLineEdit()
         self.search_box.setObjectName("searchBox")
         self.search_box.setMinimumHeight(52)
-        self.search_box.setStyleSheet("font-size: 17px; padding-left: 14px;")
+        self.search_box.setProperty("large", True)  # styled in theme.py
         self.search_box.setPlaceholderText("Search for a video…")
         self.search_box.setEnabled(False)
         self.search_box.returnPressed.connect(self._run_search)
@@ -263,7 +288,7 @@ class DownloadPage(QWidget):
 
         self.warning = QLabel(WARNING_TEXT)
         self.warning.setWordWrap(True)
-        self.warning.setStyleSheet("color: #ff4d4d; font-size: 13px; font-weight: 600;")
+        self.warning.setObjectName("inlineWarning")
         self.allow_button = QPushButton("Allow Internet Access")
         self.allow_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.allow_button.clicked.connect(self.allow_internet)
@@ -274,6 +299,7 @@ class DownloadPage(QWidget):
         self.results = ResultList()
         self.results.selectRequested.connect(self._select)
         self.results.downloadRequested.connect(self._download_result)
+        self.results.set_placeholder("Search for movies and shows", "Allow internet access above to begin.")
         self.status = QLabel("Allow internet access to start searching.")
         self.status.setObjectName("hint")
         self.status.setWordWrap(True)
@@ -327,6 +353,7 @@ class DownloadPage(QWidget):
         self.search_box.setEnabled(True)
         self.search_box.setFocus()
         self.status.setText("Type a title and press Enter.")
+        self.results.set_placeholder("Search for movies and shows", "Type a title and press Enter.")
         self._resume_interrupted()
 
     def _resume_interrupted(self) -> None:
@@ -379,6 +406,7 @@ class DownloadPage(QWidget):
         self.spinner.stop()
         self.set_results(found)
         self.status.setText(f"{len(found)} result(s)." if found else "No results.")
+        self.results.set_placeholder("No results", "Try a different title or fewer words.")
         if found:
             self.results.setFocus()
 

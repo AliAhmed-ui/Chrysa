@@ -102,7 +102,7 @@ class HeroCarousel(QWidget):
     SHADOW = 46  # room under the card for its halo and drop shadow
     TOP = 26
     AURA = 14  # room around the Play pill for its hover glow
-    RADIUS = 22.0
+    LEGACY_RADIUS = 22.0
     INTERVAL_MS = 9000
     TEXT_INSET = 48  # generous negative space left of the typography
 
@@ -129,7 +129,7 @@ class HeroCarousel(QWidget):
         self._info.clicked.connect(self._more_info)
 
         self._animation = QVariantAnimation(self)
-        self._animation.setDuration(520)
+        self._animation.setDuration(theme.ms("slow"))
         self._animation.setStartValue(0.0)
         self._animation.setEndValue(1.0)
         self._animation.valueChanged.connect(self._set_fade)
@@ -139,6 +139,10 @@ class HeroCarousel(QWidget):
         host.thumbs.thumbnailReady.connect(self.on_thumbnail)
 
     # ------------------------------------------------------------- content
+
+    @property
+    def RADIUS(self) -> float:
+        return float(theme.RADIUS_L) if theme.FLAT else self.LEGACY_RADIUS
 
     @property
     def items(self) -> list[HeroItem]:
@@ -274,7 +278,7 @@ class HeroCarousel(QWidget):
             source = QRectF(excess / 2, 0, rect.width() * dpr, rect.height() * dpr)
             painter.drawPixmap(rect, pixmap, source)
         else:
-            paint_placeholder(painter, rect, item.title)
+            paint_placeholder(painter, rect, item.title, dark=True)
 
     def paintEvent(self, _event) -> None:
         if not self._items:
@@ -286,7 +290,10 @@ class HeroCarousel(QWidget):
         )
         card = self._card()
         item = self._items[self._index]
-        paint_shadow(painter, card, self.RADIUS, 1.8, feather=1.6, offset=14.0, layers=9)
+        if theme.FLAT:
+            paint_shadow(painter, card, self.RADIUS, 0.9 if theme.SCHEME == "dark" else 0.35, feather=1.4, offset=8.0, layers=7)
+        else:
+            paint_shadow(painter, card, self.RADIUS, 1.8, feather=1.6, offset=14.0, layers=9)
 
         clip = QPainterPath()
         clip.addRoundedRect(card, self.RADIUS, self.RADIUS)
@@ -300,7 +307,7 @@ class HeroCarousel(QWidget):
 
         # Cinematic grade: #121318 dissolves from the left edge through an eased ramp, so the
         # type sits on solid shade while the picture opens up to the right.
-        base = QColor(theme.BG)
+        base = QColor(18, 18, 20) if theme.FLAT else QColor(theme.BG)  # white type needs a dark grade, even in Light
         ink = (base.red(), base.green(), base.blue())
         side = QLinearGradient(card.left(), 0, card.right(), 0)
         for stop, alpha in ((0.0, 255), (0.16, 248), (0.30, 214), (0.44, 150), (0.58, 84), (0.72, 34), (0.86, 6), (1.0, 0)):
@@ -318,7 +325,8 @@ class HeroCarousel(QWidget):
         light = QRadialGradient(QPointF(card.right() - card.width() * 0.12, card.top() + 10), card.width() * 0.45)
         light.setColorAt(0.0, QColor(255, 255, 255, 34))  # a soft key light from the upper right
         light.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.fillRect(card, light)
+        if not theme.FLAT:
+            painter.fillRect(card, light)
         painter.restore()
 
         # Ambient rim: 1px rgba(255,255,255,.12), a little brighter along the top edge.
@@ -357,7 +365,7 @@ class HeroCarousel(QWidget):
         kicker.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
         painter.setFont(kicker)
         spot = QPointF(left, baseline - QFontMetricsF(font).descent() + 2)
-        painter.setPen(QColor(theme.ACCENT))
+        painter.setPen(QColor(255, 255, 255, 170) if theme.FLAT else QColor(theme.ACCENT))
         painter.drawText(spot, item.eyebrow.upper())
 
         self._dots = []
@@ -701,7 +709,7 @@ class ShowBanner(QWidget):
             paint_placeholder(painter, rect, self._show.title)
 
         side = QLinearGradient(0, 0, rect.width(), 0)
-        base = QColor(theme.BG)
+        base = QColor(theme.BG)  # the banner melts into the page, so its type follows the theme
         ink = (base.red(), base.green(), base.blue())
         side.setColorAt(0.0, QColor(*ink, 235))
         side.setColorAt(0.35, QColor(*ink, 150))
@@ -853,7 +861,7 @@ class EpisodeRow(QWidget):
         painter.restore()
         if media.is_finished:
             badge = QRectF(thumb.center().x() - 13, thumb.center().y() - 13, 26, 26)
-            icons.paint(painter, "check", badge, theme.TEXT_SOFT)
+            icons.paint(painter, "check", badge, "#ffffff")
 
         left = thumb.right() + 22
         right_limit = (self._restart.x() if self._restart.isVisible() else self._button.x()) - 18

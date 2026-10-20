@@ -165,3 +165,9 @@ tests/           unit tests for the core, plus an offscreen smoke test of the br
 Built with [PyQt6](https://www.riverbankcomputing.com/software/pyqt/),
 [libVLC](https://www.videolan.org/vlc/libvlc.html), [FFmpeg](https://ffmpeg.org/) and
 [guessit](https://github.com/guessit-io/guessit).
+
+## Switching the look
+
+The GUI is selected in `chrysa/design.py`: `ACTIVE = "ui_apple"` is the Apple-inspired design
+(Dark and Light themes, plus the four original themes), `ACTIVE = "ui"` is the original neon design.
+Change that one line to switch; both packages stay in the repository.

@@ -80,16 +80,16 @@ class NavButton(QPushButton):
         self.setCheckable(True)
         self._icon_name = icon_name
         self.apply_theme()
-        self.setIconSize(QSize(18, 18))
+        self.setIconSize(QSize(16, 16))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.setFixedHeight(38)
+        self.setFixedHeight(32)
         self._count = QLabel(self)
         self._count.setObjectName("navCount")
         self._count.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def apply_theme(self) -> None:
-        self.setIcon(icons.icon(self._icon_name, theme.ACCENT))
+        self.setIcon(icons.icon(self._icon_name, theme.ACCENT if theme.FLAT else theme.ACCENT))
 
     def set_count(self, count: int | None) -> None:
         self._count.setText("" if count is None else str(count))
@@ -133,7 +133,6 @@ class Sidebar(QWidget):
     searchChanged = pyqtSignal(str)
     rescanRequested = pyqtSignal()
     subtitlesRequested = pyqtSignal()
-    logLocationRequested = pyqtSignal()
     analyticsRequested = pyqtSignal()
     analyticsToggled = pyqtSignal(bool)
     addFolderRequested = pyqtSignal()
@@ -171,38 +170,34 @@ class Sidebar(QWidget):
         self._buttons: dict[str, NavButton] = {}
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 22, 14, 14)
-        layout.setSpacing(6)
+        layout.setContentsMargins(12, 20, 12, 12)
+        layout.setSpacing(2)
         layout.addWidget(BrandLabel())
         layout.addSpacing(10)
         layout.addWidget(self.search)
-        layout.addSpacing(20)
+        layout.addSpacing(14)
         for key, icon_name, text in self.SECTIONS:
             button = NavButton(icon_name, text)
             button.clicked.connect(lambda _checked=False, k=key: self.navigate.emit(k))
             self._tabs.addButton(button)
             self._buttons[key] = button
             layout.addWidget(button)
+        layout.addSpacing(16)
+        layout.addWidget(self._group("Tools"))
         self.fetch_subtitles = self._action(
             "download", "Fetch Subtitles", "Download missing English subtitles for your movies and episodes"
         )
         self.fetch_subtitles.clicked.connect(self.subtitlesRequested)
         layout.addWidget(self.fetch_subtitles)
-        self.log_location = self._action(
-            "folder", "Change log location",
-            "Choose the folder where Chrysa keeps your watch log (what you were watching and where you stopped)",
-        )
-        self.log_location.clicked.connect(self.logLocationRequested)
-        layout.addWidget(self.log_location)
         self.analytics = self._action(
-            "library", "Watch Analytics", "See how much you watch: hours, favourites and completion rate"
+            "chart", "Watch Analytics", "See how much you watch: hours, favourites and completion rate"
         )
         self.analytics.clicked.connect(self.analyticsRequested)
         self.analytics_toggle = QPushButton("On")
         self.analytics_toggle.setObjectName("analyticsToggle")
         self.analytics_toggle.setCheckable(True)
         self.analytics_toggle.setChecked(True)
-        self.analytics_toggle.setFixedSize(40, 20)
+        self.analytics_toggle.setFixedSize(38, 20)
         self.analytics_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.analytics_toggle.setToolTip("Turn Watch Analytics on or off")
         self.analytics_toggle.toggled.connect(self._style_analytics_toggle)
@@ -216,6 +211,11 @@ class Sidebar(QWidget):
         layout.addStretch(1)
 
         self.activity = ActivityLog()
+        self.activity.setVisible(False)
+        self.activity_toggle = self._action("chevron-right", "Activity", "Show what Chrysa has been doing in the background")
+        self.activity_toggle.setCheckable(True)
+        self.activity_toggle.toggled.connect(self._show_activity)
+        layout.addWidget(self.activity_toggle)
         layout.addWidget(self.activity)
 
         self.status = ElidedLabel()
@@ -236,6 +236,17 @@ class Sidebar(QWidget):
         for button in (self.rescan, folders, self.theme_button, more):
             layout.addWidget(button)
 
+    def _group(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("groupLabel")
+        label.setFixedHeight(22)
+        return label
+
+    def _show_activity(self, shown: bool) -> None:
+        self.activity.setVisible(shown)
+        self.activity_toggle.setProperty("iconName", "chevron-down" if shown else "chevron-right")
+        self.activity_toggle.setIcon(icons.icon("chevron-down" if shown else "chevron-right", theme.ICON_IDLE))
+
     def _action(self, icon_name: str, text: str, tip: str) -> QPushButton:
         button = QPushButton(text)
         button.setObjectName("sidebarAction")
@@ -251,12 +262,12 @@ class Sidebar(QWidget):
         colours = (theme.ACCENT, theme.ON_ACCENT) if on else (theme.SURFACE_RAISED, theme.TEXT_MUTED)
         self.analytics_toggle.setStyleSheet(
             f"QPushButton {{ background: {colours[0]}; color: {colours[1]}; border: none; border-radius: 10px;"
-            " font-size: 11px; font-weight: 600; padding: 0; }"
+            f" font-size: {theme.TYPE['caption'][0]}px; font-weight: 600; padding: 0; }}"
         )
 
     def set_theme_name(self, name: str) -> None:
-        self.theme_button.setText(f"Theme: {name}")
-        self.theme_button.setToolTip(f"Theme: {name} - click to change (Ctrl+T)")
+        self.theme_button.setText(f"Appearance: {name}")
+        self.theme_button.setToolTip(f"Appearance: {name} - click to change (Ctrl+T)")
 
     def apply_theme(self) -> None:
         self._search_icon.setIcon(icons.icon("search", theme.TEXT_MUTED))
@@ -339,7 +350,7 @@ class MainWindow(QMainWindow):
         self.mode_bar = QWidget()
         self.mode_bar.setObjectName("browser")
         bar = QHBoxLayout(self.mode_bar)
-        bar.setContentsMargins(0, 12, 0, 6)
+        bar.setContentsMargins(0, 10, 0, 10)
         bar.addStretch(1)
         bar.addWidget(self.mode_switch)
         bar.addStretch(1)
@@ -358,7 +369,6 @@ class MainWindow(QMainWindow):
         self.top_bar.rescanRequested.connect(lambda: self.rescan(manual=True))
         self.top_bar.addFolderRequested.connect(self.add_folder)
         self.top_bar.subtitlesRequested.connect(self.fetch_subtitles)
-        self.top_bar.logLocationRequested.connect(self.change_log_location)
         self.top_bar.analyticsRequested.connect(self.show_analytics)
         self.top_bar.analyticsToggled.connect(lambda on: self.library.set_flag("analytics_enabled", on))
         self.top_bar.analytics_toggle.setChecked(self.library.flag("analytics_enabled", True))
@@ -778,6 +788,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.addAction("Library Folders…").triggered.connect(self.manage_folders)
         menu.addAction("Rescan Library").triggered.connect(lambda: self.rescan(manual=True))
+        menu.addAction("Watch Log Location…").triggered.connect(self.change_log_location)
         menu.addSeparator()
         hardware = QAction("Hardware Video Decoding", menu, checkable=True)
         hardware.setChecked(self.library.flag("hardware_decoding", True))

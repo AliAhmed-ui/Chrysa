@@ -41,7 +41,7 @@ POSTER_WIDTH = 194  # a poster card: 170px picture + shadow room
 CARD_GAP = 0
 CAPTION_HEIGHT = 46  # title + subtitle under the picture
 RADIUS = 14.0
-LIFT = 4.0  # how far the picture rises on hover
+LIFT = 3.0  # how far the picture rises on hover
 
 
 def picture_height(width: int, poster: bool = False) -> int:
@@ -129,7 +129,7 @@ class SmoothScrollArea(QScrollArea):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._target = 0
         self._animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
-        self._animation.setDuration(260)
+        self._animation.setDuration(theme.ms("standard"))
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     def wheelEvent(self, event) -> None:
@@ -168,7 +168,7 @@ class MediaCard(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self.setAccessibleName(model.title)
         self._animation = QVariantAnimation(self)
-        self._animation.setDuration(140)
+        self._animation.setDuration(theme.ms("quick"))
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._animation.valueChanged.connect(self._set_hover)
 
@@ -259,7 +259,12 @@ class MediaCard(QWidget):
         )
         t = self._hover
         rect = self._picture_rect()
-        paint_shadow(painter, rect, RADIUS, 0.55 + 0.45 * t, glow=t)
+        flat = theme.FLAT
+        RADIUS = float(theme.RADIUS_M) if flat else globals()["RADIUS"]
+        if flat:
+            paint_shadow(painter, rect, RADIUS, 0.30 + 0.45 * t, offset=2.0 + 2.0 * t, layers=5, feather=1.2)
+        else:
+            paint_shadow(painter, rect, RADIUS, 0.55 + 0.45 * t, glow=t)
 
         outline = QPainterPath()
         outline.addRoundedRect(rect, RADIUS, RADIUS)
@@ -278,7 +283,8 @@ class MediaCard(QWidget):
         else:
             paint_placeholder(painter, rect, self.model.title)
             self._tint = vivid(QColor.fromHsv(zlib.crc32(self.model.title.encode("utf-8", "replace")) % 360, 160, 140))
-        painter.fillRect(rect, QColor(255, 255, 255, 14))  # the glass surface wash
+        if not flat:
+            painter.fillRect(rect, QColor(255, 255, 255, 14))  # the glass surface wash
 
         scrim = QLinearGradient(0, rect.top() + rect.height() * (0.7 if self.model.poster else 0.55), 0, rect.bottom())
         scrim.setColorAt(0.0, QColor(0, 0, 0, 0))
@@ -300,7 +306,8 @@ class MediaCard(QWidget):
         spec.setColorAt(0.2, QColor(255, 255, 255, 38))
         spec.setColorAt(0.8, QColor(255, 255, 255, 38))
         spec.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.fillRect(QRectF(rect.left(), rect.top(), rect.width(), 1.0), spec)
+        if not flat:
+            painter.fillRect(QRectF(rect.left(), rect.top(), rect.width(), 1.0), spec)
         painter.restore()
 
         if self.model.progress is not None:
@@ -320,13 +327,16 @@ class MediaCard(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255, 36), 1))
             painter.setBrush(QColor(0, 0, 0, 166))
             painter.drawEllipse(badge)
-            icons.paint(painter, "check", badge.adjusted(4.5, 4.5, -4.5, -4.5), theme.TEXT_SOFT)
+            icons.paint(painter, "check", badge.adjusted(4.5, 4.5, -4.5, -4.5), "#ffffff")
 
         # Physical glass rim: specular light on the top and left edges, dark refraction on the bottom and right.
         painter.setBrush(Qt.BrushStyle.NoBrush)
         if self.hasFocus():
             painter.setPen(QPen(QColor(theme.ACCENT), 2))
             painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), RADIUS, RADIUS)
+        elif flat:  # one hairline all round, like a macOS thumbnail
+            painter.setPen(QPen(QColor(255, 255, 255, 26) if theme.SCHEME == "dark" else QColor(0, 0, 0, 24), 1))
+            painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
         else:
             edge = rect.adjusted(0.5, 0.5, -0.5, -0.5)
             lit = QPainterPath()
@@ -399,7 +409,7 @@ def paint_pill(painter: QPainter, origin: QPointF, text: str, size: int = 11) ->
     painter.setBrush(QColor(0, 0, 0, 166))
     painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
     painter.setFont(font)
-    painter.setPen(QColor(theme.TEXT_SOFT))
+    painter.setPen(QColor(255, 255, 255, 225))  # the pill is dark in every theme
     painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
     painter.restore()
     return rect
@@ -419,9 +429,16 @@ class PlayButton(QPushButton):
         self.setFixedHeight(height + 2 * aura)
         self._hover = 0.0
         self._animation = QVariantAnimation(self)
-        self._animation.setDuration(160)
+        self._animation.setDuration(theme.ms("quick"))
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._animation.valueChanged.connect(self._set_hover)
+        self._ring = False  # draw the focus ring only for keyboard focus
+
+    def focusInEvent(self, event) -> None:
+        self._ring = event.reason() in (
+            Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason, Qt.FocusReason.ShortcutFocusReason
+        )
+        super().focusInEvent(event)
 
     def _set_hover(self, value) -> None:
         self._hover = float(value)
@@ -458,7 +475,8 @@ class PlayButton(QPushButton):
         painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
         rect = QRectF(self.rect()).adjusted(self._aura, self._aura, -self._aura, -self._aura)
         enabled = self.isEnabled()
-        if self._aura and self._hover > 0.01 and enabled:  # a soft white aura that swells on hover
+        radius = float(theme.RADIUS_S + 2) if theme.FLAT else rect.height() / 2
+        if self._aura and self._hover > 0.01 and enabled and not theme.FLAT:  # a soft aura that swells on hover
             painter.setPen(Qt.PenStyle.NoPen)
             for i in range(self._aura, 0, -1):
                 glow = QColor(theme.ACCENT)
@@ -468,7 +486,12 @@ class PlayButton(QPushButton):
         fill = QColor(theme.ACCENT_PRESSED if self.isDown() else theme.mix(theme.ACCENT, theme.ACCENT_HOVER, self._hover))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill if enabled else QColor(theme.BORDER))
-        painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+        painter.drawRoundedRect(rect, radius, radius)
+        if self.hasFocus() and self._ring:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(theme.TEXT), 2))
+            painter.drawRoundedRect(rect.adjusted(-1, -1, 1, 1), radius + 1, radius + 1)
+            painter.setPen(Qt.PenStyle.NoPen)
 
         font = self._font()
         painter.setFont(font)
@@ -495,37 +518,35 @@ def vivid(colour: QColor, value: float = 0.85, floor: float = 0.55) -> QColor:
 
 
 class BrandLabel(QWidget):
-    """The CHRYSA wordmark: light, widely tracked, with a soft metallic gradient."""
+    """The Chrysa wordmark: set in the headline style, no ornament."""
 
-    def __init__(self, text: str = "CHRYSA", parent: QWidget | None = None) -> None:
+    def __init__(self, text: str = "Chrysa", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._text = text
-        self.setFixedHeight(34)
+        self.setFixedHeight(30)
+        self.setAccessibleName(text)
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        font = theme.ui_font(19, QFont.Weight.DemiBold)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 6)
-        painter.setFont(font)
-        sheen = QLinearGradient(0, 0, 0, self.height())
-        sheen.setColorAt(0.0, QColor(theme.TEXT))
-        sheen.setColorAt(1.0, QColor(theme.TEXT_DIM))
-        painter.setPen(QPen(QBrush(sheen), 1))
-        painter.drawText(self.rect().adjusted(8, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._text)
+        painter.setFont(theme.ui_font(19, QFont.Weight.Bold, -1.0))
+        painter.setPen(QColor(theme.TEXT))
+        painter.drawText(self.rect().adjusted(10, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._text)
         painter.end()
 
 
-def paint_placeholder(painter: QPainter, rect: QRectF, title: str) -> None:
-    """Stand-in artwork: a gradient of the theme's surface tones with a film glyph."""
+def paint_placeholder(painter: QPainter, rect: QRectF, title: str, dark: bool = False) -> None:
+    """Stand-in artwork: a gradient of the theme's surface tones with a film glyph.
+
+    *dark* forces a dark neutral ground, for places that lay white type over the picture."""
     gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
-    gradient.setColorAt(0.0, QColor(theme.SURFACE_HOVER))
-    gradient.setColorAt(1.0, QColor(theme.SURFACE))
+    gradient.setColorAt(0.0, QColor("#3a3a3c") if dark else QColor(theme.SURFACE_HOVER))
+    gradient.setColorAt(1.0, QColor("#232325") if dark else QColor(theme.SURFACE))
     painter.fillRect(rect, gradient)
     side = min(rect.width(), rect.height()) * 0.3
     glyph = QRectF(rect.center().x() - side / 2, rect.top() + rect.height() * 0.42 - side / 2, side, side)
     painter.setOpacity(0.28)
-    icons.paint(painter, "film", glyph)
+    icons.paint(painter, "film", glyph, "#ffffff" if dark else None)
     painter.setOpacity(1.0)
 
 
@@ -543,7 +564,7 @@ class _RowScroller(QScrollArea):
         self.viewport().setAutoFillBackground(False)
         self.viewport().setStyleSheet("background: transparent;")
         self._animation = QPropertyAnimation(self.horizontalScrollBar(), b"value", self)
-        self._animation.setDuration(420)
+        self._animation.setDuration(theme.ms("slow"))
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     def glide(self, pixels: int) -> None:
