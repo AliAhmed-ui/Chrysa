@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMenu,
     QMessageBox,
+    QPushButton,
     QSizePolicy,
     QToolButton,
     QToolTip,
@@ -42,6 +43,9 @@ _HIDE_AFTER_MS = 2500
 _HUD_MS = 500
 _TOP_HEIGHT = 60
 _BOTTOM_HEIGHT = 104
+_SKIP_SIZE = (140, 38)
+_SKIP_MARGIN = 28
+_INTRO_LEAD = 0.5  # the button appears this long before the detected intro starts
 
 
 class VideoSurface(QFrame):
@@ -215,6 +219,7 @@ class PlayerPage(QWidget):
         self._playing_ticks = 0
         self._ended = False
         self._has_history = False
+        self._intro: tuple[float, float] | None = None
         self._vlc_module = None
         self._was_maximized = False
         self._volume = int(library.setting("volume", "100") or 100)
@@ -229,6 +234,13 @@ class PlayerPage(QWidget):
 
         self._build_top_bar()
         self._build_bottom_bar()
+        self._skip_intro = QPushButton("Skip Intro", self)
+        self._skip_intro.setObjectName("skipIntro")
+        self._skip_intro.setFixedSize(*_SKIP_SIZE)
+        self._skip_intro.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._skip_intro.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._skip_intro.clicked.connect(self.skip_intro)
+        self._skip_intro.hide()
         self._hud = QLabel(self)
         self._hud.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._hud.setObjectName("playerHud")
@@ -356,8 +368,12 @@ class PlayerPage(QWidget):
         self.surface.setGeometry(0, 0, width, height)
         self.top_bar.setGeometry(0, 0, width, _TOP_HEIGHT)
         self.controls.setGeometry(0, height - _BOTTOM_HEIGHT, width, _BOTTOM_HEIGHT)
+        self._skip_intro.move(
+            width - _SKIP_SIZE[0] - _SKIP_MARGIN, height - _BOTTOM_HEIGHT - _SKIP_SIZE[1] - _SKIP_MARGIN // 2
+        )
         self.top_bar.raise_()
         self.controls.raise_()
+        self._skip_intro.raise_()
         self._hud.raise_()
 
     # ----------------------------------------------------------------- VLC
@@ -423,6 +439,8 @@ class PlayerPage(QWidget):
 
         self._media = media
         self._next = self._library.next_episode(media)
+        self._intro = self._library.intro_for(media)
+        self._skip_intro.hide()
         self._externals = find_external_subtitles(media.path)
         self._external_ids, self._embedded_spu, self._pending_external = {}, set(), None
         self._expected_start = start
@@ -471,6 +489,8 @@ class PlayerPage(QWidget):
             self._player.stop()
         self.surface.setUpdatesEnabled(True)
         self._media = None
+        self._intro = None
+        self._skip_intro.hide()
 
     def close_player(self) -> None:
         """Leave the player and return to the library."""
@@ -546,6 +566,30 @@ class PlayerPage(QWidget):
                 self._seek.set_value(position)
                 self._update_time_label(position, duration)
         self._set_play_icon(state == vlc.State.Playing)
+        self._update_skip_intro(position)
+
+    def _update_skip_intro(self, position: float) -> None:
+        """Show "Skip Intro" while the playhead is inside the detected opening titles."""
+        inside = (
+            self._intro is not None
+            and self._position_valid
+            and self._intro[0] - _INTRO_LEAD <= position < self._intro[1] - 1.0
+        )
+        if inside == self._skip_intro.isHidden():
+            if inside:
+                self._skip_intro.winId()  # a real window, so it stacks above libVLC's video
+                self._skip_intro.show()
+                self._skip_intro.raise_()
+            else:
+                self._skip_intro.hide()
+
+    def skip_intro(self) -> None:
+        """Jump to the end of the opening titles."""
+        if self._media is None or self._intro is None:
+            return
+        self._skip_intro.hide()
+        self.seek(self._intro[1])
+        self._show_hud("Intro skipped")
 
     def _update_time_label(self, position: float, duration: float) -> None:
         self._time.setText(f"{format_clock(position)} / {format_clock(duration)}")

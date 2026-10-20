@@ -2,6 +2,7 @@
 PyQt6>=6.6,<7          # GUI toolkit (bundles Qt 6, QtSvg)
 python-vlc>=3.0.18     # ctypes bindings for the system libVLC (embedded player)
 guessit>=3.8           # release-name parser: titles, years, seasons, episodes
+numpy>=1.26            # FFT cross-correlation that finds each show's intro (Skip Intro)
 subliminal>=2.2        # online subtitle search (Fetch Subtitles button)
 pydbus>=0.6; sys_platform == "linux"  # MPRIS D-Bus service: media keys, Bluetooth buttons
 PyGObject>=3.42; sys_platform == "linux"  # GLib main loop for pydbus (needs libgirepository/cairo dev headers to build)

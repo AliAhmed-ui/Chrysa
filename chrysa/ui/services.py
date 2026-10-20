@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterable
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
+from .. import intro
 from ..library import Library
 from ..models import Media, Show
 from ..subtitles import fetch_missing_subtitles
@@ -121,3 +123,83 @@ class ThumbnailService(QObject):
 
     def stop(self) -> None:
         self._workers.stop()
+
+
+class IntroWorker(QThread):
+    """Looks for opening titles season by season, off the UI thread, and caches what it finds."""
+
+    introFound = pyqtSignal(int)  # media id
+
+    def __init__(self, library: Library, resume: threading.Event, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._library = library
+        self._resume = resume  # cleared while a video plays so ffmpeg does not compete with it
+
+    def run(self) -> None:
+        try:
+            for episodes, done in self._library.intro_jobs():
+                if self.isInterruptionRequested():
+                    break
+                intro.analyse_season(episodes, done, self._store, self._should_stop)
+        except Exception:  # a damaged file must never take the app down
+            pass
+        finally:
+            self._library.db.close()
+
+    def _should_stop(self) -> bool:
+        while not self._resume.wait(0.25):  # paused: wait here, between files
+            if self.isInterruptionRequested():
+                return True
+        return self.isInterruptionRequested()
+
+    def _store(self, media: Media, found: intro.Intro | None) -> None:
+        self._library.save_intro(media, (found.start, found.end) if found else None)
+        if found:
+            self.introFound.emit(media.id)
+
+
+class IntroService(QObject):
+    """Runs one :class:`IntroWorker` at a time; asking again while it runs queues one more pass."""
+
+    introFound = pyqtSignal(int)
+
+    def __init__(self, library: Library, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._library = library
+        self._worker: IntroWorker | None = None
+        self._again = False
+        self._resume = threading.Event()
+        self._resume.set()
+        self._stopped = False
+
+    def queue_missing(self) -> None:
+        if self._stopped or not intro.available():
+            return
+        if self._worker is not None:
+            self._again = True
+            return
+        worker = self._worker = IntroWorker(self._library, self._resume, self)
+        worker.introFound.connect(self.introFound)
+        worker.finished.connect(self._done)
+        worker.start()
+
+    def _done(self) -> None:
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.deleteLater()
+        if self._again:
+            self._again = False
+            self.queue_missing()
+
+    def pause(self) -> None:
+        self._resume.clear()
+
+    def resume(self) -> None:
+        self._resume.set()
+
+    def stop(self) -> None:
+        self._stopped = True
+        if self._worker is not None:
+            self._worker.requestInterruption()
+            self._resume.set()
+            self._worker.wait(5000)

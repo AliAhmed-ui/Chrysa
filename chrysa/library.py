@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 
-from . import naming
+from . import intro, naming
 from .config import FEATURE_LENGTH_SECONDS, MIN_PLAYED_SECONDS, SHORT_CLIP_SECONDS, Paths, default_media_dir
 from .database import Database
 from .models import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Folder, Media, NextUp, ScanSummary, Show
@@ -43,6 +43,9 @@ _EPISODE_ORDER = (
 
 ProgressFn = Callable[[str], None]
 StopFn = Callable[[], bool]
+
+
+_COMMIT_EVERY = 100  # rows per scan transaction; keeps the write lock short so playback never waits
 
 
 class Library:
@@ -233,7 +236,13 @@ class Library:
         summary = ScanSummary()
         with self.db.transaction() as con:
             show_ids = _sync_shows(con, result.videos, now)
-            for path, video in plan.scanned.items():
+            for done, (path, video) in enumerate(plan.scanned.items(), 1):
+                if done % _COMMIT_EVERY == 0:
+                    # Let the UI thread write (watch progress, settings) between batches
+                    # instead of waiting for the whole scan to commit.
+                    con.execute("COMMIT")
+                    time.sleep(0.03)
+                    con.execute("BEGIN IMMEDIATE")
                 row = plan.existing.get(path)
                 was_moved = False
                 if row is None and path in plan.moved:
@@ -317,8 +326,13 @@ class Library:
     def _save_name_cache(self) -> None:
         entries = list(naming.drain_new_entries())
         if entries:
-            with self.db.transaction() as con:
-                con.executemany("INSERT OR REPLACE INTO name_cache (name, hint, data) VALUES (?, ?, ?)", entries)
+            for start in range(0, len(entries), _COMMIT_EVERY):
+                with self.db.transaction() as con:
+                    con.executemany(
+                        "INSERT OR REPLACE INTO name_cache (name, hint, data) VALUES (?, ?, ?)",
+                        entries[start:start + _COMMIT_EVERY],
+                    )
+                time.sleep(0.03)
 
     # ------------------------------------------------------------ browsing
 
@@ -469,6 +483,8 @@ class Library:
                 """,
                 (media_id, max(0.0, position), max(0.0, duration), now),
             )
+        except sqlite3.OperationalError:
+            return  # database busy: the next tick saves again, never stall the player
         except sqlite3.IntegrityError:
             return  # the file was removed from the library while it was playing
         if position > 0 and now - self._log_written.get(media_id, 0.0) >= LOG_WRITE_INTERVAL:
@@ -630,6 +646,47 @@ class Library:
         return next_up(self.episodes(show_id))
 
     # ---------------------------------------------------------- thumbnails
+
+    # --------------------------------------------------------------- intros
+
+    def intro_for(self, media: Media) -> tuple[float, float] | None:
+        """The cached opening-titles window of *media*, or None when unknown or not found."""
+        row = self.db.connection().execute(
+            "SELECT start_seconds, end_seconds, size FROM intros WHERE media_id = ?", (media.id,)
+        ).fetchone()
+        if row is None or row["start_seconds"] is None or row["size"] != media.size:
+            return None
+        return row["start_seconds"], row["end_seconds"]
+
+    def save_intro(self, media: Media, window: tuple[float, float] | None) -> None:
+        start, end = window if window else (None, None)
+        self.db.connection().execute(
+            "INSERT INTO intros (media_id, start_seconds, end_seconds, size) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(media_id) DO UPDATE SET start_seconds = excluded.start_seconds, "
+            "end_seconds = excluded.end_seconds, size = excluded.size",
+            (media.id, start, end, media.size),
+        )
+
+    def intro_jobs(self) -> list[tuple[list[Media], set[int]]]:
+        """Seasons (two episodes or more) with episodes not yet analysed: ``(episodes, analysed ids)``."""
+        if self.setting("intro_algorithm") != str(intro.ALGORITHM):
+            self.db.connection().execute("DELETE FROM intros")  # detection changed: look again
+            self.set_setting("intro_algorithm", intro.ALGORITHM)
+        analysed = {
+            r["media_id"]: r["size"]
+            for r in self.db.connection().execute("SELECT media_id, size FROM intros")
+        }
+        seasons: dict[tuple[int, int], list[Media]] = {}
+        for media in self._media("WHERE m.kind = 'episode' AND m.show_id IS NOT NULL AND m.season > 0", order=_EPISODE_ORDER):
+            seasons.setdefault((media.show_id, media.season), []).append(media)
+        jobs = []
+        for episodes in seasons.values():
+            done = {m.id for m in episodes if analysed.get(m.id) == m.size}
+            if len(episodes) >= 2 and len(done) < len(episodes):
+                jobs.append((episodes, done))
+        # What you are watching first: a season you have just started is ready before a backlog.
+        jobs.sort(key=lambda job: -max((m.last_watched or 0.0 for m in job[0]), default=0.0))
+        return jobs
 
     def thumbnail_jobs(self) -> list[Media]:
         """Media still waiting for a frame grab, the ones shown on the home screen first."""

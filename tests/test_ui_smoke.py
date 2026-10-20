@@ -56,6 +56,33 @@ class BrowsingWindow(LibraryCase):
         self.window.close()
         self.spin(50)
 
+    def test_analytics_dashboard_opens_from_the_sidebar(self):
+        from chrysa.ui.analytics import AnalyticsDashboardWidget
+
+        movie = self.library.movies()[0]
+        self.library.save_progress(movie.id, 600, movie.duration)
+        dialog = AnalyticsDashboardWidget(self.library, self.window)
+        dialog.show()
+        self.assertEqual(self.window.top_bar.analytics.text(), "Watch Analytics")
+        self.assertEqual(dialog._total.text(), "0.17 h")
+        self.assertEqual(dialog._rate.text(), "0%")
+        dialog.grab()  # paints the charts
+        dialog.close()
+
+    def test_skip_intro_button_follows_the_intro_window(self):
+        player = self.window.player
+        player._intro = (20.0, 65.0)
+        player._position_valid = True
+        player._update_skip_intro(5.0)
+        self.assertFalse(player._skip_intro.isVisibleTo(player))
+        player._update_skip_intro(30.0)
+        self.assertTrue(player._skip_intro.isVisibleTo(player))
+        player._update_skip_intro(64.5)  # the last second is not worth a button
+        self.assertFalse(player._skip_intro.isVisibleTo(player))
+        player._intro = None
+        player._update_skip_intro(30.0)
+        self.assertFalse(player._skip_intro.isVisibleTo(player))
+
     def spin(self, ms):
         loop = QEventLoop()
         QTimer.singleShot(ms, loop.quit)

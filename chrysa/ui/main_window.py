@@ -30,13 +30,14 @@ from ..config import APP_NAME, default_media_dir
 from ..library import Library
 from ..models import Media, ScanSummary, Show, format_clock
 from . import icons, theme
+from .analytics import AnalyticsDashboardWidget
 from .dialogs import FoldersDialog
 from ..downloads import DEFAULT_DIR as DEFAULT_DOWNLOAD_DIR
 from .download_view import DownloadPage
 from .images import ImageLoader
 from .pages import GridPage, HomePage, SearchPage, ShowPage
 from .player import PlayerPage
-from .services import ScanWorker, SubtitleWorker, ThumbnailService
+from .services import IntroService, ScanWorker, SubtitleWorker, ThumbnailService
 from .toggle import ModeSwitch
 from .widgets import BrandLabel, CardModel, MediaCard, movie_card, show_card
 
@@ -133,6 +134,8 @@ class Sidebar(QWidget):
     rescanRequested = pyqtSignal()
     subtitlesRequested = pyqtSignal()
     logLocationRequested = pyqtSignal()
+    analyticsRequested = pyqtSignal()
+    analyticsToggled = pyqtSignal(bool)
     addFolderRequested = pyqtSignal()
     menuRequested = pyqtSignal(QPoint)
     themeRequested = pyqtSignal()
@@ -191,6 +194,25 @@ class Sidebar(QWidget):
         )
         self.log_location.clicked.connect(self.logLocationRequested)
         layout.addWidget(self.log_location)
+        self.analytics = self._action(
+            "library", "Watch Analytics", "See how much you watch: hours, favourites and completion rate"
+        )
+        self.analytics.clicked.connect(self.analyticsRequested)
+        self.analytics_toggle = QPushButton("On")
+        self.analytics_toggle.setObjectName("analyticsToggle")
+        self.analytics_toggle.setCheckable(True)
+        self.analytics_toggle.setChecked(True)
+        self.analytics_toggle.setFixedSize(40, 20)
+        self.analytics_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.analytics_toggle.setToolTip("Turn Watch Analytics on or off")
+        self.analytics_toggle.toggled.connect(self._style_analytics_toggle)
+        self.analytics_toggle.toggled.connect(self.analyticsToggled)
+        inner = QHBoxLayout(self.analytics)
+        inner.setContentsMargins(0, 0, 8, 0)
+        inner.addStretch(1)
+        inner.addWidget(self.analytics_toggle)
+        self._style_analytics_toggle(True)
+        layout.addWidget(self.analytics)
         layout.addStretch(1)
 
         self.activity = ActivityLog()
@@ -224,12 +246,21 @@ class Sidebar(QWidget):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         return button
 
+    def _style_analytics_toggle(self, on: bool) -> None:
+        self.analytics_toggle.setText("On" if on else "Off")
+        colours = (theme.ACCENT, theme.ON_ACCENT) if on else (theme.SURFACE_RAISED, theme.TEXT_MUTED)
+        self.analytics_toggle.setStyleSheet(
+            f"QPushButton {{ background: {colours[0]}; color: {colours[1]}; border: none; border-radius: 10px;"
+            " font-size: 11px; font-weight: 600; padding: 0; }"
+        )
+
     def set_theme_name(self, name: str) -> None:
         self.theme_button.setText(f"Theme: {name}")
         self.theme_button.setToolTip(f"Theme: {name} - click to change (Ctrl+T)")
 
     def apply_theme(self) -> None:
         self._search_icon.setIcon(icons.icon("search", theme.TEXT_MUTED))
+        self._style_analytics_toggle(self.analytics_toggle.isChecked())
         for button in self.findChildren(QPushButton, "sidebarAction"):
             name = button.property("iconName")
             if name:
@@ -255,6 +286,7 @@ class MainWindow(QMainWindow):
         self.library = library
         self.images = ImageLoader(self)
         self.thumbs = ThumbnailService(library, self)
+        self.intros = IntroService(library, self)
         self._scan: ScanWorker | None = None
         self._subtitle_fetch: SubtitleWorker | None = None
         self._closing = False
@@ -327,6 +359,9 @@ class MainWindow(QMainWindow):
         self.top_bar.addFolderRequested.connect(self.add_folder)
         self.top_bar.subtitlesRequested.connect(self.fetch_subtitles)
         self.top_bar.logLocationRequested.connect(self.change_log_location)
+        self.top_bar.analyticsRequested.connect(self.show_analytics)
+        self.top_bar.analyticsToggled.connect(lambda on: self.library.set_flag("analytics_enabled", on))
+        self.top_bar.analytics_toggle.setChecked(self.library.flag("analytics_enabled", True))
         self.top_bar.menuRequested.connect(self._show_more_menu)
         self.top_bar.themeRequested.connect(self.change_theme)
         theme.manager.subscribe(self._on_theme_changed)
@@ -616,6 +651,7 @@ class MainWindow(QMainWindow):
         if summary.changed:
             self.reload()
         queued = self.thumbs.queue_missing()
+        self.intros.queue_missing()
         changes = []
         if summary.added:
             changes.append(f"{summary.added} new")
@@ -690,6 +726,12 @@ class MainWindow(QMainWindow):
             return
         ok, message = self.library.set_watch_log_dir(default)
         self._after_log_change(ok, message)
+
+    def show_analytics(self) -> None:
+        if not self.library.flag("analytics_enabled", True):
+            self._set_status("Watch Analytics is off. Switch it on to see your stats.", 5000)
+            return
+        AnalyticsDashboardWidget(self.library, self).exec()
 
     def change_log_location(self) -> None:
         self._pick_log_location(self.library.watch_log_dir() or str(self.library.paths.data_dir))
@@ -791,5 +833,6 @@ class MainWindow(QMainWindow):
             self._subtitle_fetch.requestInterruption()
             self._subtitle_fetch.wait(5000)
         self.thumbs.stop()
+        self.intros.stop()
         self.images.shutdown()
         super().closeEvent(event)

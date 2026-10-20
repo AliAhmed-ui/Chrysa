@@ -70,7 +70,7 @@ def probe_many(
     paths = list(paths)
     if not paths:
         return
-    workers = workers or max(2, min(8, (os.cpu_count() or 4)))
+    workers = workers or max(2, min(4, (os.cpu_count() or 4) // 2))  # leave CPU for playback
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="chrysa-probe") as pool:
         futures = {pool.submit(probe, path): path for path in paths}
         for future in as_completed(futures):

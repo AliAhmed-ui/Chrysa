@@ -178,6 +178,11 @@ QPushButton#ghost {{
 }}
 QPushButton#ghost:hover {{ background: {rgba(BG, 0.75)}; border-color: {ACCENT_ALT}; }}
 QPushButton#ghost:pressed {{ background: {BG}; }}
+QPushButton#skipIntro {{
+    background: {SURFACE_RAISED}; border: 1px solid {rgba(TEXT, 0.35)}; border-radius: 19px;
+    color: {TEXT}; font-size: 14px; font-weight: 600; padding: 0 22px;
+}}
+QPushButton#skipIntro:hover {{ background: {ACCENT}; border-color: {ACCENT}; color: {ON_ACCENT}; }}
 QPushButton#outline {{
     background: {SURFACE}; border: 1px solid {BORDER};
     border-radius: 16px; color: {TEXT_SOFT}; padding: 7px 14px;

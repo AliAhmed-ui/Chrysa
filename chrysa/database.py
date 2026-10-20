@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -80,6 +80,14 @@ CREATE TABLE IF NOT EXISTS playback (
     subtitle_file    TEXT                    -- external subtitle chosen for this file
 );
 CREATE INDEX IF NOT EXISTS playback_recent ON playback(last_watched DESC);
+
+-- Opening titles found by comparing episode audio (see intro.py). No start/end = looked, found none.
+CREATE TABLE IF NOT EXISTS intros (
+    media_id      INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    start_seconds REAL,
+    end_seconds   REAL,
+    size          INTEGER NOT NULL DEFAULT 0   -- file size when analysed; a different file is analysed again
+);
 
 -- Memoised guessit results (parsing a name costs several milliseconds).
 CREATE TABLE IF NOT EXISTS name_cache (
