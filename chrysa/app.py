@@ -31,8 +31,10 @@ def run_gui(args) -> int:
     from PyQt6.QtWidgets import QApplication
 
     from .library import Library
-    from .ui import theme
-    from .ui.main_window import MainWindow
+    from . import design
+
+    theme = design.load("theme")
+    MainWindow = design.load("main_window").MainWindow
 
     # argv[0] becomes the X11 instance name; with the application name it forms
     # WM_CLASS ("chrysa", "Chrysa"), which is how the dock matches chrysa.desktop.
