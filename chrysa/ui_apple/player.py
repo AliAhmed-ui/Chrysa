@@ -43,7 +43,7 @@ _HIDE_AFTER_MS = 2500
 _HUD_MS = 500
 _TOP_HEIGHT = 60
 _BOTTOM_HEIGHT = 104
-_SKIP_SIZE = (140, 38)
+_SKIP_SIZE = (156, 42)
 _SKIP_MARGIN = 28
 _INTRO_LEAD = 0.5  # the button appears this long before the detected intro starts
 
@@ -234,7 +234,7 @@ class PlayerPage(QWidget):
 
         self._build_top_bar()
         self._build_bottom_bar()
-        self._skip_intro = QPushButton("Skip Intro", self)
+        self._skip_intro = QPushButton("Skip Intro  ⏭", self)
         self._skip_intro.setObjectName("skipIntro")
         self._skip_intro.setFixedSize(*_SKIP_SIZE)
         self._skip_intro.setCursor(Qt.CursorShape.PointingHandCursor)

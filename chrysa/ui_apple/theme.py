@@ -134,6 +134,7 @@ SUCCESS = WARNING = ERROR = ""
 SCHEME = "dark"
 FLAT = False
 CARD_BORDER = "rgba(255, 255, 255, 0.06)"
+MODE_BAR = "#000000"
 
 
 def _install(palette: Palette) -> None:
@@ -141,7 +142,7 @@ def _install(palette: Palette) -> None:
     global BG, SURFACE, SIDEBAR, SURFACE_RAISED, SURFACE_HOVER, BORDER
     global TEXT, TEXT_SOFT, TEXT_DIM, TEXT_MUTED
     global ACCENT, ACCENT_ALT, ACCENT_HOVER, ACCENT_PRESSED, ON_ACCENT
-    global ACCENT_SOFT, ALT_SOFT, ALT_RIM, ICON_IDLE, ICON_DISABLED, CARD_BORDER
+    global ACCENT_SOFT, ALT_SOFT, ALT_RIM, ICON_IDLE, ICON_DISABLED, CARD_BORDER, MODE_BAR
     global HOVER, PRESSED, SELECTED, FOCUS_RING, SEPARATOR, SCRIM
     global SUCCESS, WARNING, ERROR, SCHEME, FLAT
 
@@ -184,6 +185,7 @@ def _install(palette: Palette) -> None:
     SUCCESS = "#30d158" if dark else "#248a3d"
     WARNING = "#ff9f0a" if dark else "#b25000"
     ERROR = "#ff453a" if dark else "#d70015"
+    MODE_BAR = "#000000" if dark and FLAT else BG  # the strip across the top holding the mode control
     CARD_BORDER = "rgba(255, 255, 255, 0.07)" if dark else "rgba(0, 0, 0, 0.08)"
 
 
@@ -202,6 +204,7 @@ def style_sheet() -> str:
 * {{ outline: none; }}
 QWidget {{ color: {TEXT}; }}
 QMainWindow, QDialog, #browser {{ background: {BG}; }}
+#modeBar {{ background: {MODE_BAR}; }}
 QToolTip {{
     background: {SURFACE_RAISED}; color: {TEXT_SOFT}; border: 1px solid {SEPARATOR};
     border-radius: {RADIUS_S}px; padding: 5px 8px; font-size: {px['footnote']}px;
@@ -279,10 +282,11 @@ QPushButton#ghost:hover {{ background: {rgba('#000000', 0.55)}; }}
 QPushButton#ghost:pressed {{ background: {rgba('#000000', 0.70)}; }}
 QPushButton#ghost:focus {{ border: 2px solid {FOCUS_RING}; }}
 QPushButton#skipIntro {{
-    background: {rgba('#000000', 0.55)}; border: 1px solid {rgba('#ffffff', 0.35)}; border-radius: {RADIUS_M}px;
-    color: #ffffff; font-size: {px['body']}px; font-weight: 600; padding: 0 20px;
+    background: {rgba('#ffffff', 0.94)}; border: 1px solid {rgba('#ffffff', 0.60)}; border-radius: 21px;
+    color: #111114; font-size: {px['body']}px; font-weight: 700; letter-spacing: 0.3px; padding: 0 22px 0 24px;
 }}
 QPushButton#skipIntro:hover {{ background: {ACCENT}; border-color: {ACCENT}; color: {ON_ACCENT}; }}
+QPushButton#skipIntro:pressed {{ background: {ACCENT_PRESSED}; border-color: {ACCENT_PRESSED}; color: {ON_ACCENT}; }}
 QPushButton#skipIntro:focus {{ border: 2px solid {FOCUS_RING}; }}
 QPushButton#outline {{
     background: transparent; border: 1px solid {SEPARATOR}; border-radius: {RADIUS_M}px;
