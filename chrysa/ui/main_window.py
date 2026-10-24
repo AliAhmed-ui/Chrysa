@@ -375,11 +375,6 @@ class MainWindow(QMainWindow):
 
         self.reload()
         self.show_tab("home")
-        # Catch up with whatever changed on disk since the last run.
-        self._startup_scan = QTimer(self)
-        self._startup_scan.setSingleShot(True)
-        self._startup_scan.timeout.connect(self.rescan)
-        self._startup_scan.start(250)
 
     # ---------------------------------------------------------- navigation
 
@@ -820,7 +815,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._closing = True  # no new background work from here on
         theme.manager.unsubscribe(self._on_theme_changed)
-        self._startup_scan.stop()
         if self.player.is_active:
             self.player.close_player()  # saves the position and leaves fullscreen
         self.player.shutdown()

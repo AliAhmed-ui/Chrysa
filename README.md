@@ -38,7 +38,7 @@ same path and start in a fraction of a second.
 - **Watch log that follows you between systems** — on first launch Chrysa asks where to
   keep `chrysa-watch-log.json`, a small file recording which movie you stopped in and
   which episode of which season you left off at. Point both systems of a dual boot at
-  the same folder and progress is merged silently at start-up and after every scan
+  the same folder and progress is merged silently after every scan (*Rescan Library*)
   (newest wins; entries are matched by title and season/episode, not file path).
   *Change log location* in the sidebar moves it.
 - **Browse (Search & Download)** — the switch at the top of the window. Right (default) is

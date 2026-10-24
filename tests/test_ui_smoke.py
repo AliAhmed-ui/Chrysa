@@ -49,8 +49,8 @@ class BrowsingWindow(LibraryCase):
         self.window.resize(1280, 760)
         self.window.show()
         self.addCleanup(self._close)
-        # Let the automatic start-up rescan run and finish before poking at the window.
-        self.wait_for(lambda: not self.window._startup_scan.isActive() and not self.window.is_scanning)
+        # No rescan runs at start-up; make sure nothing is in flight before poking at the window.
+        self.wait_for(lambda: not self.window.is_scanning)
 
     def _close(self):
         self.window.close()
