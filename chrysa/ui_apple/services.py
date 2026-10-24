@@ -9,6 +9,7 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from .. import intro
 from ..library import Library
+from ..metadata import fetch_missing_details
 from ..models import Media, Show
 from ..subtitles import fetch_missing_subtitles
 from ..thumbnails import PRIORITY_BACKGROUND, PRIORITY_HOME, PRIORITY_VISIBLE, ThumbnailWorkers
@@ -58,6 +59,27 @@ class SubtitleWorker(QThread):
             self.finishedFetch.emit(summary)
         except Exception as error:
             self.logLine.emit("WARN", f"Subtitle search failed: {type(error).__name__}: {error}")
+            self.finishedFetch.emit(None)
+        finally:
+            self._library.db.close()
+
+
+class DetailsWorker(QThread):
+    """Looks up plots and artwork online off the UI thread, reporting each line as a signal."""
+
+    logLine = pyqtSignal(str, str)  # level, message
+    finishedFetch = pyqtSignal(object)  # DetailsSummary, or None if the run crashed
+
+    def __init__(self, library: Library, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._library = library
+
+    def run(self) -> None:
+        try:
+            summary = fetch_missing_details(self._library, self.logLine.emit, self.isInterruptionRequested)
+            self.finishedFetch.emit(summary)
+        except Exception as error:
+            self.logLine.emit("WARN", f"Fetching details failed: {type(error).__name__}: {error}")
             self.finishedFetch.emit(None)
         finally:
             self._library.db.close()

@@ -143,6 +143,20 @@ class Show:
 
 
 @dataclass(slots=True)
+class Details:
+    """Plot, rating and artwork fetched online for a show, movie or episode."""
+
+    source_id: int | None = None  # the web service's id for the item (TVMaze show or episode)
+    title: str | None = None
+    plot: str | None = None
+    rating: float | None = None  # 0-10
+    air_date: str | None = None
+    image_path: str | None = None  # poster (show, movie) or still (episode)
+    backdrop_path: str | None = None
+    fetched_at: float = 0.0
+
+
+@dataclass(slots=True)
 class Folder:
     """A library root."""
 

@@ -15,13 +15,15 @@ from collections.abc import Callable, Iterable
 from . import intro, naming
 from .config import FEATURE_LENGTH_SECONDS, MIN_PLAYED_SECONDS, SHORT_CLIP_SECONDS, Paths, default_media_dir
 from .database import Database
-from .models import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Folder, Media, NextUp, ScanSummary, Show
+from .models import KIND_EPISODE, KIND_MOVIE, KIND_OTHER, Details, Folder, Media, NextUp, ScanSummary, Show
 from .probe import MediaInfo, probe_many
 from .scanner import ScannedVideo, Scanner, ScanResult
 from .watchlog import WatchLog, describe, identity
 
 WATCH_LOG_SETTING = "watchlog.dir"
 LOG_WRITE_INTERVAL = 5.0  # seconds between watch-log file writes while playing (the database is saved every second)
+
+DETAILS_RETRY_SECONDS = 30 * 24 * 3600  # an empty answer from the metadata service is asked again after this long
 
 THUMB_PENDING, THUMB_READY, THUMB_FAILED = 0, 1, 2
 
@@ -726,6 +728,88 @@ class Library:
 
     def set_backdrop(self, show_id: int, path: str | None) -> None:
         self.db.connection().execute("UPDATE shows SET backdrop_path = ? WHERE id = ?", (path, show_id))
+
+    # ------------------------------------------------------ fetched details
+
+    def show_details(self, show_id: int) -> Details | None:
+        row = self.db.connection().execute(
+            "SELECT source_id, plot, rating, poster_path, backdrop_path, fetched_at FROM show_details WHERE show_id = ?",
+            (show_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return Details(row["source_id"], None, row["plot"], row["rating"], None,
+                       row["poster_path"], row["backdrop_path"], row["fetched_at"])
+
+    def media_details(self, media_id: int) -> Details | None:
+        row = self.db.connection().execute(
+            "SELECT source_id, title, plot, rating, air_date, image_path, backdrop_path, fetched_at "
+            "FROM media_details WHERE media_id = ?",
+            (media_id,),
+        ).fetchone()
+        return Details(*tuple(row)) if row else None
+
+    def episode_details(self, show_id: int) -> dict[int, Details]:
+        """Fetched details of every episode of a show, keyed by media id."""
+        rows = self.db.connection().execute(
+            "SELECT d.media_id, d.source_id, d.title, d.plot, d.rating, d.air_date, d.image_path, d.backdrop_path, "
+            "d.fetched_at FROM media_details d JOIN media m ON m.id = d.media_id WHERE m.show_id = ?",
+            (show_id,),
+        )
+        return {row[0]: Details(*tuple(row)[1:]) for row in rows}
+
+    def save_show_details(self, show_id: int, details: Details) -> None:
+        self.db.connection().execute(
+            "INSERT INTO show_details (show_id, source_id, plot, rating, poster_path, backdrop_path, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(show_id) DO UPDATE SET source_id = excluded.source_id, "
+            "plot = excluded.plot, rating = excluded.rating, poster_path = excluded.poster_path, "
+            "backdrop_path = excluded.backdrop_path, fetched_at = excluded.fetched_at",
+            (show_id, details.source_id, details.plot, details.rating, details.image_path,
+             details.backdrop_path, details.fetched_at or time.time()),
+        )
+
+    def save_media_details(self, media_id: int, details: Details) -> None:
+        self.db.connection().execute(
+            "INSERT INTO media_details (media_id, source_id, title, plot, rating, air_date, image_path, "
+            "backdrop_path, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id) DO UPDATE SET "
+            "source_id = excluded.source_id, title = excluded.title, plot = excluded.plot, rating = excluded.rating, "
+            "air_date = excluded.air_date, image_path = excluded.image_path, "
+            "backdrop_path = excluded.backdrop_path, fetched_at = excluded.fetched_at",
+            (media_id, details.source_id, details.title, details.plot, details.rating, details.air_date,
+             details.image_path, details.backdrop_path, details.fetched_at or time.time()),
+        )
+
+    def shows_missing_details(self) -> list[Show]:
+        """Shows never looked up, or whose episodes were never looked up (retrying empty answers after a month)."""
+        stale = time.time() - DETAILS_RETRY_SECONDS
+        rows = self.db.connection().execute(
+            """
+            SELECT s.id FROM shows s LEFT JOIN show_details d ON d.show_id = s.id
+            WHERE d.show_id IS NULL OR (d.plot IS NULL AND d.fetched_at < :stale)
+               OR EXISTS (SELECT 1 FROM media m LEFT JOIN media_details md ON md.media_id = m.id
+                          WHERE m.show_id = s.id AND m.season IS NOT NULL AND m.episode IS NOT NULL
+                            AND (md.media_id IS NULL OR (md.plot IS NULL AND md.fetched_at < :stale)))
+            ORDER BY s.sort_title
+            """,
+            {"stale": stale},
+        ).fetchall()
+        return [show for show in (self.show(row["id"]) for row in rows) if show is not None]
+
+    def episodes_missing_details(self, show_id: int) -> list[Media]:
+        stale = time.time() - DETAILS_RETRY_SECONDS
+        return self._media(
+            "LEFT JOIN media_details md ON md.media_id = m.id WHERE m.show_id = ? AND m.season IS NOT NULL "
+            "AND m.episode IS NOT NULL AND (md.media_id IS NULL OR (md.plot IS NULL AND md.fetched_at < ?))",
+            (show_id, stale), _EPISODE_ORDER,
+        )
+
+    def movies_missing_details(self) -> list[Media]:
+        stale = time.time() - DETAILS_RETRY_SECONDS
+        return self._media(
+            "LEFT JOIN media_details md ON md.media_id = m.id WHERE m.kind = 'movie' "
+            "AND (md.media_id IS NULL OR (md.plot IS NULL AND md.fetched_at < ?))",
+            (stale,), "ORDER BY m.sort_title, m.year",
+        )
 
     def prune_thumbnails(self) -> int:
         """Delete cached images that no library item refers to any more."""

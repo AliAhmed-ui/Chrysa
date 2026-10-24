@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -89,6 +89,31 @@ CREATE TABLE IF NOT EXISTS intros (
     size          INTEGER NOT NULL DEFAULT 0   -- file size when analysed; a different file is analysed again
 );
 
+-- Plot, rating and artwork fetched online (see metadata.py). A row means "looked up";
+-- no plot = nothing was found, and the lookup is retried after a while.
+CREATE TABLE IF NOT EXISTS show_details (
+    show_id       INTEGER PRIMARY KEY REFERENCES shows(id) ON DELETE CASCADE,
+    source_id     INTEGER,    -- the web service's own id (TVMaze)
+    plot          TEXT,
+    rating        REAL,
+    poster_path   TEXT,
+    backdrop_path TEXT,
+    fetched_at    REAL NOT NULL
+);
+
+-- The same for movies and episodes. image_path is the poster of a movie or the still of an episode.
+CREATE TABLE IF NOT EXISTS media_details (
+    media_id      INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    source_id     INTEGER,    -- the web service's own id (TVMaze)
+    title         TEXT,
+    plot          TEXT,
+    rating        REAL,
+    air_date      TEXT,
+    image_path    TEXT,
+    backdrop_path TEXT,
+    fetched_at    REAL NOT NULL
+);
+
 -- Memoised guessit results (parsing a name costs several milliseconds).
 CREATE TABLE IF NOT EXISTS name_cache (
     name TEXT NOT NULL,
@@ -152,6 +177,9 @@ class Database:
             )
         if version < SCHEMA_VERSION:
             with self.transaction() as tx:
+                if version == 3:  # the first draft of these two tables named a column differently; nothing was kept in them
+                    tx.execute("DROP TABLE IF EXISTS show_details")
+                    tx.execute("DROP TABLE IF EXISTS media_details")
                 for statement in _statements(_SCHEMA):
                     tx.execute(statement)
                 tx.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

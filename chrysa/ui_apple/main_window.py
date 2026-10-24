@@ -35,9 +35,9 @@ from .dialogs import FoldersDialog
 from ..downloads import DEFAULT_DIR as DEFAULT_DOWNLOAD_DIR
 from .download_view import DownloadPage
 from .images import ImageLoader
-from .pages import GridPage, HomePage, SearchPage, ShowPage
+from .pages import GridPage, HomePage, MovieDetailPage, SearchPage, ShowPage
 from .player import PlayerPage
-from .services import IntroService, ScanWorker, SubtitleWorker, ThumbnailService
+from .services import DetailsWorker, IntroService, ScanWorker, SubtitleWorker, ThumbnailService
 from .toggle import ModeSwitch
 from .widgets import BrandLabel, CardModel, MediaCard, movie_card, show_card
 
@@ -133,6 +133,7 @@ class Sidebar(QWidget):
     searchChanged = pyqtSignal(str)
     rescanRequested = pyqtSignal()
     subtitlesRequested = pyqtSignal()
+    detailsRequested = pyqtSignal()
     analyticsRequested = pyqtSignal()
     analyticsToggled = pyqtSignal(bool)
     addFolderRequested = pyqtSignal()
@@ -189,6 +190,16 @@ class Sidebar(QWidget):
         )
         self.fetch_subtitles.clicked.connect(self.subtitlesRequested)
         layout.addWidget(self.fetch_subtitles)
+        self.fetch_details = self._action(
+            "info", "Fetch Details", "Download plots, ratings and artwork for your movies, shows and episodes"
+        )
+        self.fetch_details.clicked.connect(self.detailsRequested)
+        layout.addWidget(self.fetch_details)
+        self.online_notice = QLabel("Notice: Using these tools requires internet access.")
+        self.online_notice.setObjectName("onlineNotice")
+        self.online_notice.setWordWrap(True)
+        self.online_notice.setContentsMargins(10, 2, 6, 6)
+        layout.addWidget(self.online_notice)
         self.analytics = self._action(
             "chart", "Watch Analytics", "See how much you watch: hours, favourites and completion rate"
         )
@@ -300,6 +311,7 @@ class MainWindow(QMainWindow):
         self.intros = IntroService(library, self)
         self._scan: ScanWorker | None = None
         self._subtitle_fetch: SubtitleWorker | None = None
+        self._details_fetch: DetailsWorker | None = None
         self._closing = False
         self._scan_was_manual = False
         self._rescan_queued = False
@@ -313,17 +325,18 @@ class MainWindow(QMainWindow):
         self.top_bar = self.sidebar  # the search box, status line and Rescan button live here
         self.home = HomePage(self)
         self.shows_page = GridPage(
-            self, "TV Shows", lambda: [show_card(s, poster=True) for s in library.shows()],
+            self, "TV Shows", lambda: [show_card(s, poster=True, details=True) for s in library.shows()],
             "No TV shows in your library yet.", poster=True,
         )
         self.movies_page = GridPage(
-            self, "Movies", lambda: [movie_card(m, poster=True) for m in library.movies()],
+            self, "Movies", lambda: [movie_card(m, poster=True, details=True) for m in library.movies()],
             "No movies in your library yet.", poster=True,
         )
         self.search_page = SearchPage(self)
         self.show_page = ShowPage(self)
+        self.movie_page = MovieDetailPage(self)
         self.pages = QStackedWidget()
-        for page in (self.home, self.shows_page, self.movies_page, self.search_page, self.show_page):
+        for page in (self.home, self.shows_page, self.movies_page, self.search_page, self.show_page, self.movie_page):
             self.pages.addWidget(page)
         self._tabs = {"home": self.home, "movies": self.movies_page, "shows": self.shows_page}
 
@@ -370,6 +383,7 @@ class MainWindow(QMainWindow):
         self.top_bar.rescanRequested.connect(lambda: self.rescan(manual=True))
         self.top_bar.addFolderRequested.connect(self.add_folder)
         self.top_bar.subtitlesRequested.connect(self.fetch_subtitles)
+        self.top_bar.detailsRequested.connect(self.fetch_details)
         self.top_bar.analyticsRequested.connect(self.show_analytics)
         self.top_bar.analyticsToggled.connect(lambda on: self.library.set_flag("analytics_enabled", on))
         self.top_bar.analytics_toggle.setChecked(self.library.flag("analytics_enabled", True))
@@ -377,13 +391,13 @@ class MainWindow(QMainWindow):
         self.top_bar.themeRequested.connect(self.change_theme)
         theme.manager.subscribe(self._on_theme_changed)
         self.thumbs.backdropReady.connect(self.show_page.on_backdrop)
+        self.thumbs.thumbnailReady.connect(self.movie_page.on_thumbnail)
 
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(lambda: self.top_bar.status.setText(""))
         self._install_shortcuts()
         self._restore_geometry()
-
         self.reload()
         self.show_tab("home")
 
@@ -467,7 +481,7 @@ class MainWindow(QMainWindow):
     def _escape(self) -> None:
         if self.top_bar.search.text():
             self.top_bar.search.clear()
-        elif self.pages.currentWidget() is self.show_page:
+        elif self.pages.currentWidget() in self._detail_pages:
             self.go_back()
         elif self.isFullScreen():
             self.showNormal()
@@ -485,22 +499,40 @@ class MainWindow(QMainWindow):
                 return key
         return None
 
+    @property
+    def _detail_pages(self) -> tuple[QWidget, QWidget]:
+        return self.show_page, self.movie_page
+
     def open_show(self, show: Show) -> None:
+        self._open_detail(self.show_page, self.show_page.open(show.id))
+
+    def open_details(self, payload) -> None:
+        """The Details button of a card: a show (or the show of a Continue Watching episode) or a movie."""
+        if isinstance(payload, Show):
+            self.open_show(payload)
+        elif isinstance(payload, Media):
+            show = self.library.show(payload.show_id) if payload.show_id is not None else None
+            if show is not None:
+                self.open_show(show)
+            else:
+                self._open_detail(self.movie_page, self.movie_page.open(payload.id))
+
+    def _open_detail(self, page: QWidget, opened: bool) -> None:
         current = self.pages.currentWidget()
-        if current is not self.show_page:
+        if current not in self._detail_pages:
             self._return_to = current
-        if self.show_page.open(show.id):
-            self.pages.setCurrentWidget(self.show_page)
+        if opened:
+            self.pages.setCurrentWidget(page)
             self.top_bar.set_active(None)
 
     def go_back(self) -> None:
-        """Leave the show detail page for wherever the viewer came from."""
-        if self.pages.currentWidget() is not self.show_page:
+        """Leave a detail page for wherever the viewer came from."""
+        if self.pages.currentWidget() not in self._detail_pages:
             return
         target = self._return_to or self.home
         if target is self.search_page and not self.top_bar.search.text().strip():
             target = self._before_search or self.home  # the search was cleared meanwhile
-        if target is self.show_page:
+        if target in self._detail_pages:
             target = self.home
         if target is self.search_page:
             self.search_page.reload()  # progress may have changed while away
@@ -527,6 +559,7 @@ class MainWindow(QMainWindow):
         card = MediaCard(model, self.images)
         card.activated.connect(self.activate)
         card.menuRequested.connect(self.show_menu)
+        card.detailsRequested.connect(self.open_details)
         if model.thumb_media_id is not None and not model.image:
             self.thumbs.thumbnailReady.connect(card.on_thumbnail)
         return card
@@ -615,6 +648,10 @@ class MainWindow(QMainWindow):
             if self.pages.currentWidget() is self.show_page:  # the show was removed from disk
                 self.pages.setCurrentWidget(self.home)
                 self.top_bar.set_active("home")
+        if self.movie_page.media_id is not None and not self.movie_page.reload():
+            if self.pages.currentWidget() is self.movie_page:  # the movie was removed from disk
+                self.pages.setCurrentWidget(self.home)
+                self.top_bar.set_active("home")
 
     def rescan(self, manual: bool = False) -> None:
         if self._closing:
@@ -701,6 +738,43 @@ class MainWindow(QMainWindow):
             worker.deleteLater()
         self.top_bar.fetch_subtitles.setEnabled(True)
         self.top_bar.fetch_subtitles.setText("Fetch Subtitles")
+
+    def fetch_details(self) -> None:
+        """Download plots and artwork for titles that lack them (background thread; needs internet)."""
+        if self._closing or self._details_fetch is not None:
+            return
+        worker = self._details_fetch = DetailsWorker(self.library, parent=self)
+        worker.logLine.connect(self.sidebar.activity.log)
+        worker.finishedFetch.connect(self._details_fetched)
+        worker.finished.connect(self._details_fetch_done)
+        self.top_bar.fetch_details.setEnabled(False)
+        self.top_bar.fetch_details.setText("Fetching…")
+        self._set_status("Fetching details…")
+        worker.start()
+
+    def _details_fetched(self, summary) -> None:
+        if summary is None:
+            self._set_status("Fetching details failed. See Activity for the reason.", 12000)
+            return
+        if summary.offline:
+            self._set_status("No internet connection. Details were not fetched.", 9000)
+        elif summary.cancelled:
+            self._set_status("")
+        else:
+            self._set_status(
+                f"Details saved: {summary.shows} shows, {summary.episodes} episodes, {summary.movies} movies"
+                if summary.fetched else "Every title already has its details", 9000,
+            )
+        if summary.fetched:
+            for page in self._detail_pages:
+                page.reload()
+
+    def _details_fetch_done(self) -> None:
+        worker, self._details_fetch = self._details_fetch, None
+        if worker is not None:
+            worker.deleteLater()
+        self.top_bar.fetch_details.setEnabled(True)
+        self.top_bar.fetch_details.setText("Fetch Details")
 
     def ask_log_location_if_needed(self) -> None:
         """First launch after installing: ask where the watch log should live."""
@@ -835,6 +909,9 @@ class MainWindow(QMainWindow):
         if self._scan is not None:
             self._scan.requestInterruption()
             self._scan.wait(5000)
+        if self._details_fetch is not None:
+            self._details_fetch.requestInterruption()
+            self._details_fetch.wait(5000)
         if self._subtitle_fetch is not None:
             self._subtitle_fetch.requestInterruption()
             self._subtitle_fetch.wait(5000)

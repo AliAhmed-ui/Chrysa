@@ -226,6 +226,99 @@ class BrowsingWindow(LibraryCase):
                 image.pixelColor(x, y) != QColor(theme.BG) for x in range(0, 1600, 5) for y in range(0, 900, 5)
             ), f"{key} drew nothing")
 
+    def test_sidebar_tools_order_and_online_notice(self):
+        from PyQt6.QtWidgets import QLabel, QPushButton
+
+        bar = self.window.sidebar
+        order = [b.text() for b in bar.findChildren(QPushButton, "sidebarAction")]
+        tools = order[order.index("Fetch Subtitles"):order.index("Watch Analytics") + 1]
+        self.assertEqual(tools, ["Fetch Subtitles", "Fetch Details", "Watch Analytics"])
+        notice = bar.findChild(QLabel, "onlineNotice")
+        self.assertEqual(notice.text(), "Notice: Using these tools requires internet access.")
+        self.assertIn(theme.ERROR, bar.styleSheet() + self.app.styleSheet())
+
+    def test_details_buttons_are_on_continue_shows_and_movies_but_not_other_videos(self):
+        heat = self.by_title("Heat")
+        self.library.save_progress(heat.id, 4000, 10227)
+        self.window.reload()
+        home = self.window.home
+        for row in (home.continue_row, home.shows_row, home.movies_row):
+            self.assertTrue(row.cards() and all(c._details is not None for c in row.cards()), row)
+        self.assertTrue(all(c._details is None for c in home.others_row.cards()))
+        for page in (self.window.shows_page, self.window.movies_page):
+            self.assertTrue(all(c._details is not None for c in page._grid.cards()))
+
+    def test_details_button_opens_the_movie_and_show_pages(self):
+        window = self.window
+        heat = next(c for c in window.home.movies_row.cards() if c.model.title == "Heat")
+        heat._details.click()
+        self.assertIs(window.pages.currentWidget(), window.movie_page)
+        self.assertEqual(window.movie_page.banner._title, "Heat")
+        self.assertEqual(window.movie_page.banner._play.text(), "Play")
+        window.go_back()
+        self.assertIs(window.pages.currentWidget(), window.home)
+
+        show = window.home.shows_row.cards()[0]
+        show._details.click()
+        self.assertIs(window.pages.currentWidget(), window.show_page)
+        window.go_back()
+
+        episode = self.library.episodes(self.library.shows()[0].id)[1]
+        self.library.save_progress(episode.id, 600, 1300)
+        window.reload()
+        window.home.continue_row.cards()[0]._details.click()  # an episode opens its show
+        self.assertIs(window.pages.currentWidget(), window.show_page)
+        self.assertEqual(window.show_page.banner._play.text(), "Resume S1:E2")
+
+    def test_fetched_details_fill_the_detail_pages(self):
+        from chrysa.models import Details
+
+        window, library = self.window, self.library
+        heat, show = self.by_title("Heat"), library.shows()[0]
+        episode = library.episodes(show.id)[0]
+        library.save_media_details(heat.id, Details(plot="A heist crew.", rating=7.9, air_date="1995-12-15"))
+        library.save_show_details(show.id, Details(plot="Six friends.", rating=8.5))
+        library.save_media_details(episode.id, Details(plot="The one where it starts."))
+
+        window.open_details(heat)
+        page = window.movie_page
+        self.assertEqual(page._plot.text(), "A heist crew.")
+        self.assertFalse(page._plot.isHidden())
+        self.assertIn("★ 7.9", page.banner._meta)
+        self.assertEqual(page._facts.text(), "Released 1995-12-15")
+        page.grab()
+
+        window.open_show(show)
+        page = window.show_page
+        self.assertEqual(page._plot.text(), "Six friends.")
+        self.assertIn("★ 8.5", page.banner._meta)
+        self.assertEqual(page._rows[0]._plot, "The one where it starts.")
+        self.assertEqual(page._rows[1]._plot, "")
+        page.grab()
+
+    def test_fetch_details_runs_in_the_background_and_refreshes_the_page(self):
+        from unittest import mock
+
+        from chrysa import metadata
+        from chrysa.models import Details
+
+        window, library = self.window, self.library
+        heat = self.by_title("Heat")
+
+        def fake_fetch(lib, log, should_stop, **_):
+            lib.save_media_details(heat.id, Details(plot="A heist crew.", fetched_at=1.0))
+            log("OK", "Heat: plot and artwork saved.")
+            return metadata.DetailsSummary(movies=1)
+
+        window.open_details(heat)
+        with mock.patch("chrysa.ui_apple.services.fetch_missing_details", fake_fetch):
+            window.fetch_details()
+            self.assertFalse(window.sidebar.fetch_details.isEnabled())
+            self.wait_for(lambda: window._details_fetch is None)
+        self.assertTrue(window.sidebar.fetch_details.isEnabled())
+        self.assertEqual(window.sidebar.fetch_details.text(), "Fetch Details")
+        self.assertEqual(window.movie_page._plot.text(), "A heist crew.")
+
     def test_season_names(self):
         self.assertEqual([season_name(n) for n in (1, 12, 0, -1)], ["Season 1", "Season 12", "Specials", "Other Episodes"])
 

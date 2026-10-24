@@ -251,6 +251,7 @@ QPushButton#sidebarAction:hover {{ background: {HOVER}; color: {TEXT}; }}
 QPushButton#sidebarAction:pressed {{ background: {PRESSED}; }}
 QPushButton#sidebarAction:focus {{ border: 2px solid {FOCUS_RING}; padding: 4px 8px; }}
 QPushButton#sidebarAction:disabled {{ color: {TEXT_MUTED}; background: transparent; }}
+#onlineNotice {{ color: {ERROR}; font-size: {px['caption']}px; }}
 #folderPath {{ color: {TEXT_MUTED}; font-size: {px['footnote']}px; }}
 #activityLog {{
     background: {rgba(TEXT, 0.05)}; border: none; border-radius: {RADIUS_S + 2}px;
@@ -312,6 +313,7 @@ QToolButton#backRound:hover {{ background: {rgba('#000000', 0.58)}; }}
 /* ---- headings ---- */
 #rowTitle {{ color: {TEXT}; font-size: {px['headline'] + 2}px; font-weight: 600; }}
 #pageTitle {{ color: {TEXT}; font-size: {px['largeTitle']}px; font-weight: 700; }}
+#plot {{ color: {TEXT_SOFT}; font-size: {px['body']}px; }}
 #sectionTitle {{ color: {TEXT}; font-size: {px['title']}px; font-weight: 700; }}
 #hint {{ color: {TEXT_MUTED}; font-size: {px['body']}px; }}
 #emptyTitle {{ color: {TEXT_SOFT}; font-size: {px['title']}px; font-weight: 600; }}

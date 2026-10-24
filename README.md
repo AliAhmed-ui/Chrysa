@@ -29,6 +29,13 @@ same path and start in a fraction of a second.
 - **Show page** — banner with a play button that resumes the last episode you were
   watching, or starts the next one if you finished it; season selector; episode list
   with titles, running times, red progress bars and *Play* / *Resume* buttons.
+- **Details and Fetch Details** — cards in Continue Watching, TV Shows and Movies have a
+  *Details* button that opens the show page (with plot, rating and an episode summary
+  under each title) or a movie page. *Fetch Details* in the sidebar looks up whatever is
+  missing in the background and stores it locally, so the pages work offline afterwards.
+  It needs internet access but no account or key: shows and episodes come from
+  [TVMaze](https://www.tvmaze.com) (summaries, ratings, air dates, posters, stills) and
+  movies from Wikipedia (the article's opening paragraph and poster). Only titles are sent.
 - **Embedded player** — seek bar, ±10 s, volume, subtitle and audio track menus,
   fullscreen, *Next Episode*, and automatic play of the next episode when one ends.
   The control bars hide after three seconds without input.
@@ -112,10 +119,11 @@ Python packages (installed into `.venv`): PyQt6, python-vlc, guessit.
 | --- | --- |
 | `~/.local/share/chrysa/chrysa.db` | library, watch progress, settings (SQLite) |
 | `~/.local/share/chrysa/thumbnails/` | cached frame grabs |
+| `~/.local/share/chrysa/metadata/` | posters, backdrops and episode stills from *Fetch Details* |
 | `~/.local/share/chrysa/chrysa.log` | output of the last launch from the app menu |
 | `~/.local/share/applications/chrysa.desktop` | launcher entry (rewritten by `run.sh`) |
 
-Chrysa never writes into your media folders. Renaming or moving a video keeps its
+Apart from the `.en.srt` files that *Fetch Subtitles* saves beside a video, Chrysa never writes into your media folders. Renaming or moving a video keeps its
 watch progress (files are recognised by size and name). If a library folder is on a
 drive that is not connected, its entries are kept rather than deleted.
 
@@ -157,7 +165,8 @@ chrysa/
   scanner.py     folder walk + classification  probe.py       ffprobe
   database.py    SQLite schema, connections    library.py     sync, queries, resume logic
   thumbnails.py  ffmpeg frame grabs            subtitles.py   external subtitle discovery
-  models.py      data objects, formatting      cli.py / app.py  entry points
+  models.py      data objects, formatting      metadata.py   TVMaze/Wikipedia plots, art
+  cli.py / app.py  entry points
   ui/            theme, icons, cards, pages, player, main window
 tests/           unit tests for the core, plus an offscreen smoke test of the browsing UI
 ```

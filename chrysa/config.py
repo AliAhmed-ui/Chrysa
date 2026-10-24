@@ -59,11 +59,17 @@ class Paths:
         return self.data_dir / "thumbnails"
 
     @property
+    def metadata(self) -> Path:
+        """Posters, backdrops and episode stills downloaded by Fetch Details."""
+        return self.data_dir / "metadata"
+
+    @property
     def log_file(self) -> Path:
         return self.data_dir / "chrysa.log"
 
     def ensure(self) -> Paths:
         self.thumbnails.mkdir(parents=True, exist_ok=True)
+        self.metadata.mkdir(parents=True, exist_ok=True)
         return self
 
 

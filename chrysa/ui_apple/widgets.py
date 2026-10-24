@@ -42,6 +42,7 @@ CARD_GAP = 0
 CAPTION_HEIGHT = 46  # title + subtitle under the picture
 RADIUS = 14.0
 LIFT = 3.0  # how far the picture rises on hover
+DETAILS_WIDTH, DETAILS_HEIGHT = 56, 22  # the Details pill on a card's picture
 
 
 def picture_height(width: int, poster: bool = False) -> int:
@@ -74,25 +75,27 @@ class CardModel:
     thumb_media_id: int | None = None  # repaint when this media's frame grab arrives
     badge: str = ""  # short translucent tag on the picture ("S1:E4", "2h 50m")
     poster: bool = False  # a tall 2:3 poster card instead of a landscape 16:9 one
+    details: bool = False  # show the Details button (not wanted on "Other Videos" or search results)
 
 
-def movie_card(media: Media, poster: bool = False) -> CardModel:
-    details = [str(media.year)] if media.year else []
+def movie_card(media: Media, poster: bool = False, details: bool = False) -> CardModel:
+    parts = [str(media.year)] if media.year else []
     if media.in_progress:
-        details.append(f"{format_duration(media.remaining)} left")
+        parts.append(f"{format_duration(media.remaining)} left")
     elif media.total_duration:
-        details.append(format_duration(media.total_duration))
+        parts.append(format_duration(media.total_duration))
     return CardModel(
-        media, media.title, " · ".join(details), media.image,
+        media, media.title, " · ".join(parts), media.image,
         media.fraction if media.in_progress else None, media.is_finished, media.id,
-        format_duration(media.total_duration), poster,
+        format_duration(media.total_duration), poster, details,
     )
 
 
-def show_card(show: Show, poster: bool = False) -> CardModel:
+def show_card(show: Show, poster: bool = False, details: bool = False) -> CardModel:
     badge = plural(show.season_count, "Season") if show.season_count else ""
     return CardModel(
-        show, show.title, show.summary, show.image, thumb_media_id=show.first_media_id, badge=badge, poster=poster
+        show, show.title, show.summary, show.image, thumb_media_id=show.first_media_id, badge=badge, poster=poster,
+        details=details,
     )
 
 
@@ -100,7 +103,9 @@ def continue_card(media: Media) -> CardModel:
     """Card for the *Continue Watching* row: always shows progress and time left."""
     left = "Watched" if media.is_finished else f"{format_duration(media.remaining)} left"
     subtitle = f"{media.episode_code} · {left}" if media.is_episode else left
-    return CardModel(media, media.heading, subtitle, media.image, media.fraction, False, media.id, media.episode_code)
+    return CardModel(
+        media, media.heading, subtitle, media.image, media.fraction, False, media.id, media.episode_code, details=True
+    )
 
 
 def episode_card(media: Media) -> CardModel:
@@ -153,6 +158,7 @@ class MediaCard(QWidget):
 
     activated = pyqtSignal(object)  # payload
     menuRequested = pyqtSignal(object, QPoint)  # payload, global position
+    detailsRequested = pyqtSignal(object)  # payload
 
     def __init__(self, model: CardModel, images: ImageLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -171,6 +177,34 @@ class MediaCard(QWidget):
         self._animation.setDuration(theme.ms("quick"))
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._animation.valueChanged.connect(self._set_hover)
+        self._details: QPushButton | None = None
+        if model.details:
+            self._details = QPushButton("Details", self)
+            self._details.setObjectName("cardDetails")
+            self._details.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._details.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            self._details.setToolTip(f"More about {model.title}")
+            self._details.setAccessibleName(f"Details for {model.title}")
+            self._details.setFixedSize(DETAILS_WIDTH, DETAILS_HEIGHT)
+            self._details.clicked.connect(lambda: self.detailsRequested.emit(self.model.payload))
+            self.apply_theme()
+            self._place_details()
+
+    def apply_theme(self) -> None:
+        if self._details is not None:  # a dark pill in every theme, like the badges; only the focus ring follows
+            self._details.setStyleSheet(
+                "QPushButton#cardDetails { background: rgba(0, 0, 0, 0.65); color: rgba(255, 255, 255, 0.88);"
+                " border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 11px; padding: 0;"
+                f" font-size: 11px; font-weight: 500; }}"
+                " QPushButton#cardDetails:hover { background: rgba(0, 0, 0, 0.82); color: #ffffff; }"
+                f" QPushButton#cardDetails:focus {{ border: 2px solid {theme.ACCENT}; }}"
+            )
+
+    def _place_details(self) -> None:
+        """Pin the Details button to the picture's top-right corner, riding the hover lift."""
+        if self._details is not None:
+            rect = self._picture_rect()
+            self._details.move(round(rect.right()) - DETAILS_WIDTH - 9, round(rect.top()) + 9)
 
     # ------------------------------------------------------------- updates
 
@@ -187,11 +221,13 @@ class MediaCard(QWidget):
     def set_card_size(self, width: int, height: int) -> None:
         if self.width() != width or self.height() != height:
             self.setFixedSize(width, height)
+            self._place_details()
 
     # -------------------------------------------------------------- events
 
     def _set_hover(self, value) -> None:
         self._hover = float(value)
+        self._place_details()
         self.update()
 
     def _animate_to(self, end: float) -> None:
@@ -323,7 +359,8 @@ class MediaCard(QWidget):
         if self.model.badge:
             paint_pill(painter, QPointF(rect.left() + 9, rect.top() + 9), self.model.badge)
         if self.model.watched:
-            badge = QRectF(rect.right() - 29, rect.top() + 9, 20, 20)
+            shift = DETAILS_WIDTH + 6 if self._details is not None else 0  # the check sits left of Details
+            badge = QRectF(rect.right() - 29 - shift, rect.top() + 9, 20, 20)
             painter.setPen(QPen(QColor(255, 255, 255, 36), 1))
             painter.setBrush(QColor(0, 0, 0, 166))
             painter.drawEllipse(badge)

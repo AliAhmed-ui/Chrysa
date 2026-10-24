@@ -55,6 +55,7 @@ _ICONS = {
     "chart": f'<g {_STROKE}><path d="M5 20V11M12 20V4M19 20v-6"/></g>',
     "library": f'<g {_STROKE}><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16"/></g>',
     "tv": f'<g {_STROKE}><rect x="2.5" y="7" width="19" height="14" rx="2.5"/><path d="M16.5 2.5L12 7 7.5 2.5"/></g>',
+    "info": f'<g {_STROKE}><circle cx="12" cy="12" r="9.5"/><path d="M12 11v5.5"/></g><g {_FILL}><circle cx="12" cy="7.6" r="1.2"/></g>',
     "clock": f'<g {_STROKE}><circle cx="12" cy="12" r="9.5"/><path d="M12 6.5V12l3.5 2"/></g>',
     "disc": f'<g {_STROKE}><circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="12" r="2.6"/>'
             '<path d="M12 5.8a6.2 6.2 0 0 1 6.2 6.2"/></g>',

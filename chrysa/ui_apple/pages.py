@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..models import Media, NextUp, Show, format_duration, plural
+from ..models import Details, Media, NextUp, Show, format_duration, plural
 from . import icons, theme
 from . import backdrop
 from .images import ImageLoader
@@ -418,8 +418,8 @@ class HomePage(SmoothScrollArea):
         resume = library.continue_watching()
         recent = recently_added(library, shows, movies + others)
         self.continue_row.set_cards([card(continue_card(m)) for m in resume])
-        self.shows_row.set_cards([card(show_card(s, poster=True)) for s in shows])
-        self.movies_row.set_cards([card(movie_card(m, poster=True)) for m in movies])
+        self.shows_row.set_cards([card(show_card(s, poster=True, details=True)) for s in shows])
+        self.movies_row.set_cards([card(movie_card(m, poster=True, details=True)) for m in movies])
         self.others_row.set_cards([card(movie_card(m)) for m in others])
         self.hero.set_items(self._hero_items(resume, recent))
         self._empty.setVisible(not (shows or movies or others))
@@ -620,6 +620,23 @@ class SearchPage(SmoothScrollArea):
 # ---------------------------------------------------------------------------
 
 
+def _rating_part(rating: float | None) -> list[str]:
+    return [f"★ {rating:.1f}"] if rating else []
+
+
+def wrap_two_lines(text: str, metrics: QFontMetricsF, width: float) -> list[str]:
+    """Fit *text* into at most two lines of *width*, the second ending in an ellipsis if it overflows."""
+    words, first = text.split(), ""
+    while words and metrics.horizontalAdvance(f"{first} {words[0]}".strip()) <= width:
+        first = f"{first} {words.pop(0)}".strip()
+    if not first and words:  # one word wider than the line
+        return [metrics.elidedText(words[0], Qt.TextElideMode.ElideRight, width)]
+    lines = [first] if first else []
+    if words:
+        lines.append(metrics.elidedText(" ".join(words), Qt.TextElideMode.ElideRight, width))
+    return lines
+
+
 class ShowBanner(QWidget):
     """The picture header of a show; clicking it plays what is next."""
 
@@ -630,8 +647,10 @@ class ShowBanner(QWidget):
     def __init__(self, images: ImageLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._images = images
-        self._show: Show | None = None
-        self._next: NextUp | None = None
+        self._title = ""
+        self._meta = ""  # "1994 · 10 Seasons · 234 Episodes"
+        self._line = ""  # what the big button does: "S6:E21 · The One … · 17m left"
+        self._playable = False
         self._image: str | None = None
         self.setFixedHeight(self.HEIGHT)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -652,14 +671,24 @@ class ShowBanner(QWidget):
     def apply_theme(self) -> None:
         self._back.setIcon(icons.icon("back"))
 
-    def set_show(self, show: Show, next_up: NextUp | None) -> None:
-        self._show, self._next = show, next_up
-        self._play.setText(next_up.label if next_up else "Play")
-        self._play.setEnabled(next_up is not None)
+    def set_show(self, show: Show, next_up: NextUp | None, image: str | None = None, rating: float | None = None) -> None:
+        """Banner for a show; *image* overrides the generated frame (a fetched backdrop)."""
+        meta = [str(show.year)] if show.year else []
+        meta.append(show.summary)
+        self.set_content(
+            show.title, "  ·  ".join(meta + _rating_part(rating)), self._next_line(next_up),
+            next_up.label if next_up else "Play", next_up is not None,
+            image or (show.backdrop_path if self.has_backdrop(show) else show.image),
+        )
+
+    def set_content(self, title: str, meta: str, line: str, label: str, playable: bool, image: str | None) -> None:
+        self._title, self._meta, self._line, self._playable = title, meta, line, playable
+        self._play.setText(label)
+        self._play.setEnabled(playable)
         self._play.adjustSize()
         self._play.move(theme.SIDE_MARGIN, self.HEIGHT - 44 - self._play.height())
         self._image = None
-        self.set_image(show.backdrop_path if self.has_backdrop(show) else show.image)
+        self.set_image(image)
         self.update()
 
     @staticmethod
@@ -673,15 +702,16 @@ class ShowBanner(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self._next is not None:
+        if event.button() == Qt.MouseButton.LeftButton and self._playable:
             self.playRequested.emit()
 
-    def _next_line(self) -> str:
-        if self._next is None:
+    @staticmethod
+    def _next_line(next_up: NextUp | None) -> str:
+        if next_up is None:
             return ""
-        episode = self._next.episode
+        episode = next_up.episode
         parts = [episode.episode_code, episode.title]
-        if self._next.action == "resume":
+        if next_up.action == "resume":
             parts.append(f"{format_duration(episode.remaining)} left")
         elif episode.total_duration:
             parts.append(format_duration(episode.total_duration))
@@ -705,8 +735,8 @@ class ShowBanner(QWidget):
             excess = (request.width() - self.width()) * dpr
             source = QRectF(excess / 2, 0, self.width() * dpr, self.height() * dpr)
             painter.drawPixmap(rect, pixmap, source)
-        elif self._show is not None:
-            paint_placeholder(painter, rect, self._show.title)
+        elif self._title:
+            paint_placeholder(painter, rect, self._title)
 
         side = QLinearGradient(0, 0, rect.width(), 0)
         base = QColor(theme.BG)  # the banner melts into the page, so its type follows the theme
@@ -720,14 +750,14 @@ class ShowBanner(QWidget):
         fade.setColorAt(1.0, QColor(*ink, 255))
         painter.fillRect(rect, fade)
 
-        if self._show is None:
+        if not self._title:
             painter.end()
             return
         left = float(theme.SIDE_MARGIN)
         available = rect.width() * 0.62
         baseline = float(self._play.y()) - 22
 
-        line = self._next_line()
+        line = self._line
         if line:
             font = theme.ui_font(15, QFont.Weight.Medium)
             painter.setFont(font)
@@ -736,24 +766,22 @@ class ShowBanner(QWidget):
             painter.drawText(QPointF(left, baseline), metrics.elidedText(line, Qt.TextElideMode.ElideRight, available))
             baseline -= metrics.height() + 6
 
-        details = [str(self._show.year)] if self._show.year else []
-        details.append(self._show.summary)
         font = theme.ui_font(15)
         painter.setFont(font)
         painter.setPen(QColor(theme.TEXT_DIM))
-        painter.drawText(QPointF(left, baseline), "  ·  ".join(details))
+        painter.drawText(QPointF(left, baseline), QFontMetricsF(font).elidedText(self._meta, Qt.TextElideMode.ElideRight, available))
         baseline -= QFontMetricsF(font).height() + 8
 
         font = theme.ui_font(52, QFont.Weight.ExtraBold)
         metrics = QFontMetricsF(font)
-        while metrics.horizontalAdvance(self._show.title) > available and font.pixelSize() > 26:
+        while metrics.horizontalAdvance(self._title) > available and font.pixelSize() > 26:
             font.setPixelSize(font.pixelSize() - 2)
             metrics = QFontMetricsF(font)
         painter.setFont(font)
         painter.setPen(QColor(theme.TEXT))
         painter.drawText(
             QPointF(left, baseline - metrics.descent() + 4),
-            metrics.elidedText(self._show.title, Qt.TextElideMode.ElideRight, available),
+            metrics.elidedText(self._title, Qt.TextElideMode.ElideRight, available),
         )
         painter.end()
 
@@ -765,12 +793,17 @@ class EpisodeRow(QWidget):
     HEIGHT = 124
     _THUMB = QSize(176, 99)
 
-    def __init__(self, media: Media, label: str, images: ImageLoader, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, media: Media, label: str, images: ImageLoader, details: Details | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.media = media
         self._label = label
         self._images = images
-        self._image = media.image
+        self._plot = details.plot if details and details.plot else ""
+        fetched = details.image_path if details and details.image_path and os.path.isfile(details.image_path) else None
+        self._image = media.image or fetched  # the real frame wins; the downloaded still fills in until it exists
         self.setFixedHeight(self.HEIGHT)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
@@ -871,9 +904,8 @@ class EpisodeRow(QWidget):
         painter.setFont(font)
         painter.setPen(QColor(theme.TEXT))
         middle = rect.height() / 2
-        painter.drawText(
-            QPointF(left, middle - 4), metrics.elidedText(media.title, Qt.TextElideMode.ElideRight, width)
-        )
+        title_y = middle - 4 if not self._plot else 36.0
+        painter.drawText(QPointF(left, title_y), metrics.elidedText(media.title, Qt.TextElideMode.ElideRight, width))
 
         details = []
         if media.total_duration:
@@ -885,7 +917,12 @@ class EpisodeRow(QWidget):
         font = theme.ui_font(13)
         painter.setFont(font)
         painter.setPen(QColor(theme.TEXT_DIM))
-        painter.drawText(QPointF(left, middle + 20), "  ·  ".join(details))
+        painter.drawText(QPointF(left, middle + 20 if not self._plot else 57.0), "  ·  ".join(details))
+        if self._plot:
+            metrics = QFontMetricsF(font)
+            painter.setPen(QColor(theme.TEXT_MUTED))
+            for number, text in enumerate(wrap_two_lines(self._plot, metrics, width)):
+                painter.drawText(QPointF(left, 78.0 + number * (metrics.height() + 1)), text)
         painter.end()
 
     def enterEvent(self, event) -> None:
@@ -930,11 +967,13 @@ class ShowPage(SmoothScrollArea):
         self._next: NextUp | None = None
         self._season: int | None = None
         self._rows: list[EpisodeRow] = []
+        self._details: Details | None = None
 
         content = AmbientPage()
         self.banner = ShowBanner(host.images)
         self.banner.playRequested.connect(self._play_next)
         self.banner.backRequested.connect(host.go_back)
+        self._plot = _plot_label()
 
         heading = QLabel("Episodes")
         heading.setObjectName("sectionTitle")
@@ -960,6 +999,7 @@ class ShowPage(SmoothScrollArea):
         layout.setContentsMargins(0, 0, 0, 56)
         layout.setSpacing(0)
         layout.addWidget(self.banner)
+        layout.addWidget(self._plot)
         layout.addLayout(bar)
         layout.addLayout(self._list)
         layout.addStretch(1)
@@ -996,8 +1036,12 @@ class ShowPage(SmoothScrollArea):
             return False
         self._show = show
         self._next = library.next_up(show_id)
-        self.banner.set_show(show, self._next)
-        if not self.banner.has_backdrop(show):
+        self._details = library.show_details(show_id)
+        fetched = _existing(self._details.backdrop_path if self._details else None)
+        self.banner.set_show(show, self._next, fetched, self._details.rating if self._details else None)
+        self._plot.setText(self._details.plot if self._details and self._details.plot else "")
+        self._plot.setVisible(bool(self._plot.text()))
+        if not fetched and not self.banner.has_backdrop(show):
             self._host.thumbs.request_backdrop(show)
 
         seasons = library.seasons(show_id)
@@ -1016,7 +1060,9 @@ class ShowPage(SmoothScrollArea):
         return True
 
     def on_backdrop(self, show_id: int, path: str) -> None:
-        if path and self._show is not None and show_id == self._show.id:
+        if path and self._show is not None and show_id == self._show.id and not (
+            self._details and _existing(self._details.backdrop_path)
+        ):
             self.banner.set_image(path)
 
     def _season_chosen(self, index: int) -> None:
@@ -1030,9 +1076,10 @@ class ShowPage(SmoothScrollArea):
             discard(row)
         self._rows = []
         episodes = self._host.library.episodes(self._show.id, season)
+        fetched = self._host.library.episode_details(self._show.id)
         for index, episode in enumerate(episodes, start=1):
             label = str(episode.episode) if episode.episode is not None else str(index)
-            row = EpisodeRow(episode, label, self._host.images)
+            row = EpisodeRow(episode, label, self._host.images, fetched.get(episode.id))
             row.playRequested.connect(self._host.play)
             self._host.thumbs.thumbnailReady.connect(row.on_thumbnail)
             self._list.addWidget(row)
@@ -1047,3 +1094,106 @@ class ShowPage(SmoothScrollArea):
     def _play_next(self) -> None:
         if self._next is not None:
             self._host.play(self._next.episode, self._next.action != "resume")
+
+
+def _existing(path: str | None) -> str | None:
+    """*path* if the file is still there (the metadata folder may have been cleared)."""
+    return path if path and os.path.isfile(path) else None
+
+
+def _plot_label() -> QLabel:
+    label = QLabel()
+    label.setObjectName("plot")
+    label.setWordWrap(True)
+    label.setMaximumWidth(920)
+    label.setContentsMargins(theme.SIDE_MARGIN, 4, theme.SIDE_MARGIN, 8)
+    label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    label.hide()
+    return label
+
+
+class MovieDetailPage(SmoothScrollArea):
+    """Detail view of one movie: banner with the Play/Resume button, rating, runtime and plot."""
+
+    def __init__(self, host) -> None:
+        super().__init__()
+        self._host = host
+        self._media: Media | None = None
+
+        content = AmbientPage()
+        self.banner = ShowBanner(host.images)
+        self.banner.playRequested.connect(self._play)
+        self.banner.backRequested.connect(host.go_back)
+        self._plot = _plot_label()
+        self._facts = QLabel()
+        self._facts.setObjectName("hint")
+        self._facts.setContentsMargins(theme.SIDE_MARGIN, 0, theme.SIDE_MARGIN, 0)
+
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 56)
+        layout.setSpacing(0)
+        layout.addWidget(self.banner)
+        layout.addWidget(self._plot)
+        layout.addWidget(self._facts)
+        layout.addStretch(1)
+        self.setWidget(content)
+        backdrop.install(self)
+
+    @property
+    def media_id(self) -> int | None:
+        return self._media.id if self._media else None
+
+    def open(self, media_id: int) -> bool:
+        if not self._load(media_id):
+            return False
+        self.verticalScrollBar().setValue(0)
+        return True
+
+    def reload(self) -> bool:
+        """Refresh after playback or a rescan. False if the movie no longer exists."""
+        return self._media is not None and self._load(self._media.id)
+
+    def _load(self, media_id: int) -> bool:
+        media = self._host.library.media(media_id)
+        if media is None:
+            self._media = None
+            return False
+        self._media = media
+        details = self._host.library.media_details(media_id)
+        title = media.title
+        meta = ["Movie"]
+        if media.year:
+            meta.append(str(media.year))
+        if media.total_duration:
+            meta.append(format_duration(media.total_duration))
+        meta += _rating_part(details.rating if details else None)
+        if media.in_progress:
+            line, label = f"{format_duration(media.remaining)} left", "Resume"
+        else:
+            line, label = ("Watched", "Watch Again") if media.is_finished else ("", "Play")
+        image = (
+            _existing(details.backdrop_path if details else None)
+            or _existing(details.image_path if details else None)
+            or media.image
+        )
+        self.banner.set_content(title, "  ·  ".join(meta), line, label, True, image)
+        plot = details.plot if details and details.plot else ""
+        self._plot.setText(plot)
+        self._plot.setVisible(bool(plot))
+        facts = []
+        if details and details.air_date:
+            facts.append(f"Released {details.air_date}")
+        self._facts.setText("  ·  ".join(facts))
+        self._facts.setVisible(bool(facts))
+        if not media.image:
+            self._host.thumbs.prioritise([media])
+        return True
+
+    def on_thumbnail(self, media_id: int, path: str) -> None:
+        if path and self._media is not None and media_id == self._media.id and not self._media.image:
+            self._media.thumb_path = path
+            self.banner.set_image(path)
+
+    def _play(self) -> None:
+        if self._media is not None:
+            self._host.play(self._media, not self._media.in_progress)
