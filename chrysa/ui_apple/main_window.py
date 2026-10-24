@@ -115,7 +115,8 @@ class ActivityLog(QPlainTextEdit):
         super().__init__(parent)
         self.setObjectName("activityLog")
         self.setReadOnly(True)
-        self.setFixedHeight(140)
+        self.setMinimumHeight(44)  # shrinks in a short window instead of covering the buttons below
+        self.setMaximumHeight(140)
         self.setMaximumBlockCount(self.MAX_LINES)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -223,10 +224,10 @@ class Sidebar(QWidget):
         layout.addStretch(1)
 
         self.activity = ActivityLog()
-        self.activity.setVisible(False)
         self.activity_toggle = self._action("chevron-right", "Activity", "Show what Chrysa has been doing in the background")
         self.activity_toggle.setCheckable(True)
         self.activity_toggle.toggled.connect(self._show_activity)
+        self.activity_toggle.setChecked(True)  # open by default, so update and scan notices are seen
         layout.addWidget(self.activity_toggle)
         layout.addWidget(self.activity)
 
@@ -322,7 +323,7 @@ class MainWindow(QMainWindow):
         self._before_search: QWidget | None = None
 
         self.setWindowTitle(APP_NAME)
-        self.setMinimumSize(960, 600)
+        self.setMinimumSize(960, 640)  # the sidebar (with its open Activity log) needs about this much
 
         self.sidebar = Sidebar()
         self.top_bar = self.sidebar  # the search box, status line and Rescan button live here
