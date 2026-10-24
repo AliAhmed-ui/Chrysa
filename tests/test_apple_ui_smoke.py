@@ -319,6 +319,47 @@ class BrowsingWindow(LibraryCase):
         self.assertEqual(window.sidebar.fetch_details.text(), "Fetch Details")
         self.assertEqual(window.movie_page._plot.text(), "A heist crew.")
 
+    def test_updates_install_report_and_are_checked_once_a_day(self):
+        import time
+        from unittest import mock
+
+        from chrysa import updater
+
+        window, library = self.window, self.library
+        self.assertFalse(window._update_timer.isActive(), "the tests disable the daily check")
+        replies = []
+
+        def fake(apply=True, **_):
+            replies.append(apply)
+            return updater.UpdateResult(updater.UPDATED, "Chrysa 1.1.0 was installed (2 changes). Restart Chrysa.", "1.0.0", "1.1.0")
+
+        with mock.patch("chrysa.ui_apple.services.check_for_update", fake):
+            window.check_for_updates()
+            self.wait_for(lambda: window._update_check is None)
+        self.assertEqual(replies, [True])
+        self.assertIn("Restart Chrysa", window.sidebar.status.text())
+        self.assertTrue(updater.due(library.setting(updater.LAST_CHECK_SETTING), now=time.time() + 25 * 3600))
+        self.assertFalse(updater.due(library.setting(updater.LAST_CHECK_SETTING)))
+
+        library.set_flag(updater.AUTO_SETTING, False)  # no daily check, nothing installed by itself
+        with mock.patch("chrysa.ui_apple.services.check_for_update", fake):
+            window.check_for_updates()
+            self.assertIsNone(window._update_check)
+            self.assertEqual(replies, [True])
+
+    def test_offline_update_check_is_silent_and_tried_again_next_launch(self):
+        from unittest import mock
+
+        from chrysa import updater
+
+        window, library = self.window, self.library
+        offline = updater.UpdateResult(updater.OFFLINE, "Could not reach GitHub to check for updates.")
+        with mock.patch("chrysa.ui_apple.services.check_for_update", lambda *a, **k: offline):
+            window.check_for_updates()
+            self.wait_for(lambda: window._update_check is None)
+        self.assertEqual(window.sidebar.status.text(), "")
+        self.assertIsNone(library.setting(updater.LAST_CHECK_SETTING), "an unanswered check must not use up the day")
+
     def test_season_names(self):
         self.assertEqual([season_name(n) for n in (1, 12, 0, -1)], ["Season 1", "Season 12", "Specials", "Other Episodes"])
 

@@ -1,8 +1,9 @@
 # Chrysa
 
 An offline, open-source media center for the movies and TV shows already on your disk.
-Dark Netflix-style interface, embedded player (libVLC), automatic resume, and no
-network access at any point: artwork is grabbed from the videos themselves.
+Dark Netflix-style interface, embedded player (libVLC) and automatic resume. Your
+library works entirely offline; the internet is used only in the four situations listed
+under [When Chrysa uses the internet](#when-chrysa-uses-the-internet).
 
 ```
 ./run.sh
@@ -11,6 +12,20 @@ network access at any point: artwork is grabbed from the videos themselves.
 That one command installs what is missing, builds the Python environment, adds
 **Chrysa** to your application launcher and starts the app. Later launches take the
 same path and start in a fraction of a second.
+
+## When Chrysa uses the internet
+
+Browsing, playing, resuming, searching and scanning your library never touch the network.
+Chrysa goes online only:
+
+1. **In Browse** (search and download), and only after you press *Allow Internet Access*.
+2. **When you press *Fetch Subtitles*** (subtitles are searched online and saved next to the video).
+3. **When you press *Fetch Details*** (plots, ratings and artwork from TVMaze and Wikipedia;
+   only titles are sent).
+4. **Once a day, to check for updates** (a single `git fetch` from GitHub, see
+   [Updating](#updating)). You can turn the automatic update off in *More ▸ Update Automatically*.
+
+Nothing else is sent anywhere, and there are no accounts, API keys or analytics.
 
 ## What it does
 
@@ -61,6 +76,35 @@ same path and start in a fraction of a second.
 - **Offline thumbnails** — a `poster.jpg` / `cover.jpg` / `folder.jpg` next to a video
   is used if present; otherwise ffmpeg grabs a frame 15 % into the file (retrying
   further in if that frame is black) and caches it.
+
+## Updating
+
+Install Chrysa with `git clone https://github.com/AliAhmed-ui/Chrysa.git` (not the ZIP
+download) and it keeps itself up to date:
+
+- **Once a day**, a few seconds after the window opens, Chrysa asks GitHub whether a newer
+  version exists. If so it installs it by itself and tells you in the status line and the
+  *Activity* log. **Restart Chrysa to start using it.**
+- You never need to know which files changed. The next launch of `./run.sh` installs any
+  new Python requirements, and the library database upgrades itself. Your library, watch
+  history and settings live outside the program folder (see
+  [Where things live](#where-things-live)) and are untouched by an update.
+- *More ▸ Check for Updates Now* checks immediately; *More ▸ Update Automatically* switches
+  the daily check and the automatic install off. With it off, Chrysa never contacts GitHub
+  by itself; *Check for Updates Now* then only reports whether something new is out, and you
+  install it with `git pull` (or by switching the option back on).
+- Updates only ever fast-forward the checkout. If you edited files in the Chrysa folder or
+  made local commits, Chrysa tells you instead of overwriting anything; run `git pull`
+  yourself after committing or stashing.
+- A copy downloaded as a ZIP has no git history, so it cannot update itself. Chrysa
+  still tells you when a newer version exists; re-download it, or better, `git clone` it once
+  and update from then on.
+
+To update by hand at any time: `git pull`, then `./run.sh`.
+
+Updates are fetched from `github.com/AliAhmed-ui/Chrysa` (`chrysa/updater.py`), which means
+you run the code published there. Turn automatic updates off if you would rather review
+changes before taking them. Set `CHRYSA_NO_UPDATE_CHECK=1` to disable the daily check entirely.
 
 ## Keyboard and mouse
 

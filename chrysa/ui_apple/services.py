@@ -10,6 +10,7 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from .. import intro
 from ..library import Library
 from ..metadata import fetch_missing_details
+from ..updater import check_for_update
 from ..models import Media, Show
 from ..subtitles import fetch_missing_subtitles
 from ..thumbnails import PRIORITY_BACKGROUND, PRIORITY_HOME, PRIORITY_VISIBLE, ThumbnailWorkers
@@ -83,6 +84,19 @@ class DetailsWorker(QThread):
             self.finishedFetch.emit(None)
         finally:
             self._library.db.close()
+
+
+class UpdateWorker(QThread):
+    """Checks GitHub for a newer Chrysa and installs it (git installs), off the UI thread."""
+
+    finishedCheck = pyqtSignal(object)  # UpdateResult
+
+    def __init__(self, apply: bool, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._apply = apply
+
+    def run(self) -> None:
+        self.finishedCheck.emit(check_for_update(self._apply, should_stop=self.isInterruptionRequested))
 
 
 class ThumbnailService(QObject):

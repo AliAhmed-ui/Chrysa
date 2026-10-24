@@ -8,6 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# The windows built by the UI tests must never ask GitHub for updates.
+os.environ.setdefault("CHRYSA_NO_UPDATE_CHECK", "1")
+
 from chrysa import library as library_module
 from chrysa import naming
 from chrysa.config import Paths

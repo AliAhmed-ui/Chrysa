@@ -29,6 +29,7 @@ from .. import __version__
 from ..config import APP_NAME, default_media_dir
 from ..library import Library
 from ..models import Media, ScanSummary, Show, format_clock
+from ..updater import AUTO_SETTING, AVAILABLE, BLOCKED, CURRENT, DISABLE_ENV, LAST_CHECK_SETTING, UPDATED, UpdateResult, due
 from . import icons, theme
 from .analytics import AnalyticsDashboardWidget
 from .dialogs import FoldersDialog
@@ -37,7 +38,7 @@ from .download_view import DownloadPage
 from .images import ImageLoader
 from .pages import GridPage, HomePage, MovieDetailPage, SearchPage, ShowPage
 from .player import PlayerPage
-from .services import DetailsWorker, IntroService, ScanWorker, SubtitleWorker, ThumbnailService
+from .services import DetailsWorker, IntroService, ScanWorker, SubtitleWorker, ThumbnailService, UpdateWorker
 from .toggle import ModeSwitch
 from .widgets import BrandLabel, CardModel, MediaCard, movie_card, show_card
 
@@ -312,6 +313,8 @@ class MainWindow(QMainWindow):
         self._scan: ScanWorker | None = None
         self._subtitle_fetch: SubtitleWorker | None = None
         self._details_fetch: DetailsWorker | None = None
+        self._update_check: UpdateWorker | None = None
+        self._update_manual = False
         self._closing = False
         self._scan_was_manual = False
         self._rescan_queued = False
@@ -398,6 +401,14 @@ class MainWindow(QMainWindow):
         self._status_timer.timeout.connect(lambda: self.top_bar.status.setText(""))
         self._install_shortcuts()
         self._restore_geometry()
+        # Once a day, a few seconds after start-up so the window is already usable.
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self.check_for_updates)
+        if (not os.environ.get(DISABLE_ENV) and self.library.flag(AUTO_SETTING, True)
+                and due(self.library.setting(LAST_CHECK_SETTING))):
+            self._update_timer.start(5000)
+
         self.reload()
         self.show_tab("home")
 
@@ -859,6 +870,12 @@ class MainWindow(QMainWindow):
         menu.addAction("Library Folders…").triggered.connect(self.manage_folders)
         menu.addAction("Rescan Library").triggered.connect(lambda: self.rescan(manual=True))
         menu.addAction("Watch Log Location…").triggered.connect(self.change_log_location)
+        menu.addAction("Check for Updates Now").triggered.connect(lambda: self.check_for_updates(manual=True))
+        auto = QAction("Update Automatically", menu, checkable=True)
+        auto.setChecked(self.library.flag(AUTO_SETTING, True))
+        auto.setToolTip("Check GitHub once a day and install new versions")
+        auto.toggled.connect(lambda on: self.library.set_flag(AUTO_SETTING, on))
+        menu.addAction(auto)
         menu.addSeparator()
         hardware = QAction("Hardware Video Decoding", menu, checkable=True)
         hardware.setChecked(self.library.flag("hardware_decoding", True))
@@ -869,6 +886,43 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(f"About {APP_NAME}").triggered.connect(self._about)
         menu.exec(position)
+
+    # ------------------------------------------------------------- updates
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        """Look for a newer Chrysa (GitHub, background thread); install it when automatic updates are on."""
+        if self._closing or self._update_check is not None:
+            return
+        automatic = self.library.flag(AUTO_SETTING, True)
+        if not manual and not automatic:
+            return
+        self._update_manual = manual
+        worker = self._update_check = UpdateWorker(apply=automatic, parent=self)
+        worker.finishedCheck.connect(self._update_checked)
+        worker.finished.connect(self._update_check_done)
+        if manual:
+            self._set_status("Checking for updates…")
+        worker.start()
+
+    def _update_checked(self, result: UpdateResult) -> None:
+        if result.reached_github:
+            self.library.set_setting(LAST_CHECK_SETTING, time.time())
+        if result.status in (UPDATED, AVAILABLE, BLOCKED):
+            level = "DONE" if result.status == UPDATED else "WARN"
+            self.sidebar.activity.log(level, result.message)
+            self._set_status(result.message, 20000)
+        elif not self._update_manual:
+            return  # the daily check is silent unless there is something to report
+        if self._update_manual:
+            if result.status == CURRENT:
+                self._set_status("Chrysa is up to date", 6000)
+            box = QMessageBox.information if result.status in (CURRENT, UPDATED) else QMessageBox.warning
+            box(self, "Chrysa updates", f"{result.message}\n\nYou are running version {result.old_version}.")
+
+    def _update_check_done(self) -> None:
+        worker, self._update_check = self._update_check, None
+        if worker is not None:
+            worker.deleteLater()
 
     def _about(self) -> None:
         counts = self.library.counts()
@@ -909,6 +963,10 @@ class MainWindow(QMainWindow):
         if self._scan is not None:
             self._scan.requestInterruption()
             self._scan.wait(5000)
+        self._update_timer.stop()
+        if self._update_check is not None:
+            self._update_check.requestInterruption()
+            self._update_check.wait(5000)
         if self._details_fetch is not None:
             self._details_fetch.requestInterruption()
             self._details_fetch.wait(5000)
