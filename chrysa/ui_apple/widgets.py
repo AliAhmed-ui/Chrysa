@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import zlib
 from dataclasses import dataclass
 
@@ -13,6 +14,7 @@ from PyQt6.QtCore import (
     QRectF,
     QSize,
     Qt,
+    QTimer,
     QVariantAnimation,
     pyqtSignal,
 )
@@ -20,7 +22,9 @@ from PyQt6.QtGui import (
     QBrush,
     QColor,
     QFont,
+    QFontMetrics,
     QFontMetricsF,
+    QGradient,
     QIcon,
     QLinearGradient,
     QPainter,
@@ -554,8 +558,37 @@ def vivid(colour: QColor, value: float = 0.85, floor: float = 0.55) -> QColor:
     return QColor.fromHsvF(hue, min(1.0, max(colour.hsvSaturationF() * 1.2, floor)), value)
 
 
+_RAINBOW_DARK = (
+    QColor("#ff453a"),  # Red
+    QColor("#ff9f0a"),  # Orange
+    QColor("#ffd60a"),  # Yellow
+    QColor("#30d158"),  # Green
+    QColor("#63e6e2"),  # Mint / Cyan
+    QColor("#0a84ff"),  # Blue
+    QColor("#bf5af2"),  # Purple
+    QColor("#ff375f"),  # Pink / Magenta
+    QColor("#ff453a"),  # Seamless wrap to Red
+)
+
+_RAINBOW_LIGHT = (
+    QColor("#d70015"),  # Red
+    QColor("#c93400"),  # Orange
+    QColor("#b25000"),  # Amber / Yellow
+    QColor("#248a3d"),  # Green
+    QColor("#007d8a"),  # Teal / Cyan
+    QColor("#0055d6"),  # Blue
+    QColor("#7839ee"),  # Purple
+    QColor("#d20f64"),  # Magenta / Pink
+    QColor("#d70015"),  # Seamless wrap to Red
+)
+
+
 class BrandLabel(QWidget):
-    """The Chrysa wordmark: set in the headline style, no ornament."""
+    """The Chrysa wordmark: set in the headline style, animated with rainbow colours flowing left to right at 60+ FPS."""
+
+    CYCLE_WIDTH = 96.0  # Rainbow wavelength in pixels
+    SPEED = 64.0  # Pixels per second to the right (full cycle in 1.5s)
+    FRAME_INTERVAL_MS = 15  # ~66.7 FPS, comfortably exceeding 60 FPS
 
     def __init__(self, text: str = "Chrysa", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -563,12 +596,75 @@ class BrandLabel(QWidget):
         self.setFixedHeight(30)
         self.setAccessibleName(text)
 
+        self._start_time = time.monotonic()
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.setInterval(self.FRAME_INTERVAL_MS)
+        self._timer.timeout.connect(self._on_tick)
+
+        if self.isVisible():
+            self._timer.start()
+
+    @property
+    def text(self) -> str:
+        return self._text
+
+    @text.setter
+    def text(self, value: str) -> None:
+        self._text = value
+        self.setAccessibleName(value)
+        self.update()
+
+    def _on_tick(self) -> None:
+        if self.isVisible():
+            self.update()
+        else:
+            self._timer.stop()
+
+    def start_animation(self) -> None:
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop_animation(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.start_animation()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self.stop_animation()
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.setFont(theme.ui_font(19, QFont.Weight.Bold, -1.0))
-        painter.setPen(QColor(theme.TEXT))
-        painter.drawText(self.rect().adjusted(10, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._text)
+
+        # Horizontal rainbow gradient moving left-to-right over time
+        elapsed = time.monotonic() - self._start_time
+        fm = painter.fontMetrics()
+        text_width = fm.horizontalAdvance(self._text)
+        cycle_width = max(self.CYCLE_WIDTH, text_width * 1.4)
+        offset = (elapsed * self.SPEED) % cycle_width
+
+        is_dark = getattr(theme, "SCHEME", "dark") == "dark"
+        colors = _RAINBOW_DARK if is_dark else _RAINBOW_LIGHT
+
+        gradient = QLinearGradient(10.0 + offset, 0, 10.0 + offset + cycle_width, 0)
+        gradient.setSpread(QGradient.Spread.RepeatSpread)
+        num_stops = len(colors) - 1
+        for i, color in enumerate(colors):
+            gradient.setColorAt(i / num_stops, color)
+
+        painter.setPen(QPen(QBrush(gradient), 1))
+        painter.drawText(
+            self.rect().adjusted(10, 0, 0, 0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            self._text,
+        )
         painter.end()
 
 
