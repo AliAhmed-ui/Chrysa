@@ -5,6 +5,8 @@ Dark Netflix-style interface, embedded player (libVLC) and automatic resume. You
 library works entirely offline; the internet is used only in the four situations listed
 under [When Chrysa uses the internet](#when-chrysa-uses-the-internet).
 
+![Chrysa](screenshot.png)
+
 ```
 ./run.sh
 ```
