@@ -4,8 +4,7 @@
 Chrysa imports :func:`search_all` for its Browse page; the command line below still works
 (``python3 -m chrysa.bd "query"`` or the ``bd.py`` shim in the project root).
 
-Sources (ported from src/sources/, FitGirl left out): YTS, The Pirate Bay,
-1337x, EZTV, Nyaa, SubsPlease, BitTorrented. Standard library only.
+Sources: YTS, The Pirate Bay, 1337x, LimeTorrents, EZTV, Nyaa, SubsPlease. Standard library only.
 
 Run it with:  python3 bd.py "query"
 
@@ -31,6 +30,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 UA = "torlink (+https://www.npmjs.com/package/torlnk)"  # same UA the repo sends
+BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 TIMEOUT = 15
 
 TRACKERS = [
@@ -52,9 +52,9 @@ def magnet(info_hash, name):
 RETRY_STATUS = {408, 425, 429, 500, 502, 503, 504}
 
 
-def get(url, accept=None, retries=1):
+def get(url, accept=None, retries=1, ua=UA):
     """GET with the repo's retry rule: back off and retry transient statuses and network errors."""
-    req = urllib.request.Request(url, headers={"User-Agent": UA, **({"Accept": accept} if accept else {})})
+    req = urllib.request.Request(url, headers={"User-Agent": ua, **({"Accept": accept} if accept else {})})
     for attempt in range(retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
@@ -114,7 +114,6 @@ def yts(q):
 
 
 def tpb(q):
-    wanted = {201, 202, 205, 207, 208, 209}  # movies + TV categories
     url = "https://apibay.org/q.php?q=" + urllib.parse.quote(q)
     items = get_json(url)
     if len(items) == 1 and items[0].get("id") == "0":  # apibay's no-results sentinel
@@ -124,25 +123,29 @@ def tpb(q):
         h = (it.get("info_hash") or "").lower()
         if not h or set(h) == {"0"} or it.get("id") == "0":
             continue
-        if int(it.get("category") or 0) not in wanted:
-            continue
         out.append(result("TPB", h, it.get("name") or "Unknown", int(it.get("size") or 0),
                           int(it.get("seeders") or 0), int(it.get("leechers") or 0)))
     return out
 
 
-def x1337_cat(q, cat):
-    html_text = base = None
-    for i, host in enumerate(("1337x.to", "1337x.st", "x1337x.ws", "1337xx.to")):
+X1337_HOSTS = ("1337x.la", "1337x.to", "1337x.st")
+LIME_HOSTS = ("www.limetorrents.fun", "www.limetorrents.lol", "www.limetorrents.info")
+
+
+def first_page(paths, hosts, retries=1):
+    """Fetch the first host that answers; return (html, base_url)."""
+    last = None
+    for i, host in enumerate(hosts):
         try:
-            path = f"/category-search/{urllib.parse.quote(q).replace('%20', '+')}/{cat}/1/"
-            html_text = get(f"https://{host}{path}", retries=2 if i == 0 else 0)
-            base = f"https://{host}"
-            break
-        except Exception:
-            continue
-    if html_text is None:
-        raise RuntimeError("1337x unreachable")
+            return get(f"https://{host}{paths}", retries=retries if i == 0 else 0, ua=BROWSER_UA), f"https://{host}"
+        except Exception as e:
+            last = e
+    raise RuntimeError(f"unreachable ({last})")
+
+
+def x1337_cat(q, cat):
+    path = f"/search/{urllib.parse.quote(q).replace('%20', '+')}/1/"
+    html_text, base = first_page(path, X1337_HOSTS)
     start = html_text.find("table-list")
     if start < 0:
         return []
@@ -155,49 +158,86 @@ def x1337_cat(q, cat):
         size = re.search(r'class="coll-4 size[^"]*">\s*([\d.]+\s*[KMGT]i?B)', tr, re.I)
         rows.append((html.unescape(link.group(2).strip()), link.group(1),
                      num("coll-2 seeds"), num("coll-3 leeches"), parse_size(size.group(1) if size else "")))
-    # Same relevance filter as the repo: every non-stopword query token must be in the title.
-    stop = {"the", "a", "an", "of", "and", "or", "to"}
-    tokens = q.lower().split()
-    need = [t for t in tokens if t not in stop] or tokens
-    rows = [r for r in rows if all(t in r[0].lower() for t in need)]
     rows.sort(key=lambda r: -r[2])
+    # The listing has no magnet; each needs its detail page. `keep` lets the caller drop junk first.
+    return rows, base
 
+
+def x1337_details(rows, base, limit=12):
     def detail(row):
         name, path, s, l, size = row
         try:
-            m = re.search(r"magnet:\?xt=urn:btih:[^\"'<>\s]+", get(base + path), re.I)
+            m = re.search(r"magnet:\?xt=urn:btih:[^\"'<>\s]+", get(base + path, ua=BROWSER_UA), re.I)
         except Exception:
             return None
         return result("1337x", "", name, size, s, l, html.unescape(m.group(0))) if m else None
 
-    with cf.ThreadPoolExecutor(4) as ex:  # the repo also caps detail-page fetches at 4
-        return [r for r in ex.map(detail, rows[:4]) if r]
+    with cf.ThreadPoolExecutor(6) as ex:
+        return [r for r in ex.map(detail, rows[:limit]) if r]
 
 
-def x1337(q):
-    out, err = [], None
-    for cat in ("Movies", "TV"):
+def x1337(q, keep=lambda name: True):
+    """Listings for *q*; only rows passing ``keep(name)`` cost a detail-page request."""
+    rows, base, err = [], None, None
+    for cat in (None,):
         try:
-            out += x1337_cat(q, cat)
+            found, base = x1337_cat(q, cat)
+            rows += [r for r in found if keep(r[0])]
         except Exception as e:
             err = e
+    if not rows:
+        if err:
+            raise err
+        return []
+    rows.sort(key=lambda r: -r[2])
+    return x1337_details(rows, base)
+
+
+def limetorrents(q, keep=lambda name: True):
+    """LimeTorrents lists the info hash in its .torrent link, so no detail pages are needed."""
+    out = []
+    slug = urllib.parse.quote(q.strip().replace(" ", "-"), safe="-")
+    err = None
+    for cat in ("all",):
+        try:
+            page, _ = first_page(f"/search/{cat}/{slug}/seeds/1/", LIME_HOSTS)
+        except Exception as e:
+            err = e
+            continue
+        for tr in re.split(r"<tr[\s>]", page, flags=re.I)[1:]:
+            link = re.search(r"torrent/([A-Fa-f0-9]{40})\.torrent", tr)
+            name = re.search(r'class="tt-name">.*?<a href="/[^"]*-torrent-\d+\.html">([^<]+)</a>', tr, re.S)
+            if not (link and name):
+                continue
+            title = html.unescape(name.group(1).strip())
+            if not keep(title):
+                continue
+            size = re.search(r'class="tdnormal">([\d.,]+\s*[KMGT]?B)<', tr)
+            seeds = re.search(r'class="tdseed">([\d,]+)', tr)
+            leech = re.search(r'class="tdleech">([\d,]+)', tr)
+            n = lambda m: int(m.group(1).replace(",", "")) if m else 0
+            out.append(result("LimeTorrents", link.group(1).lower(), title, parse_size(size.group(1)) if size else 0,
+                              n(seeds), n(leech)))
     if not out and err:
         raise err
     return out
 
 
-def eztv(q):
-    # EZTV's API has no search, so fetch the latest feed and filter locally.
-    data = get_json("https://eztvx.to/api/get-torrents?limit=100&page=1")
-    words = q.lower().split()
+def eztv_by_imdb(imdb_id):
+    """EZTV has no text search, but lists every episode of a show by IMDb id."""
+    digits = re.sub(r"\D", "", imdb_id)
     out = []
-    for t in data.get("torrents") or []:
-        name = t.get("title") or t.get("filename") or ""
-        h = (t.get("hash") or "").lower()
-        if not h or not all(w in name.lower() for w in words):
-            continue
-        out.append(result("EZTV", h, name, int(t.get("size_bytes") or 0),
-                          t.get("seeds") or 0, t.get("peers") or 0, t.get("magnet_url") or None))
+    for page in (1, 2, 3):
+        data = get_json(f"https://eztvx.to/api/get-torrents?imdb_id={digits}&limit=100&page={page}")
+        batch = data.get("torrents") or []
+        for t in batch:
+            h = (t.get("hash") or "").lower()
+            name = t.get("title") or t.get("filename") or ""
+            if h and name:
+                out.append(result("EZTV", h, name, int(t.get("size_bytes") or 0),
+                                  t.get("seeds") or 0, t.get("peers") or 0, t.get("magnet_url") or None))
+        if len(batch) < 100:
+            break
     return out
 
 
@@ -233,23 +273,8 @@ def subsplease(q):
     return out
 
 
-def bittorrented(q):
-    if len(q) < 3:
-        return []
-    data = get_json("https://bittorrented.com/api/search/torrents?" + urllib.parse.urlencode(
-        {"q": q, "type": "video", "limit": 50, "sortBy": "seeders", "sortOrder": "desc"}))
-    out = []
-    for r in data.get("results") or []:
-        h = (r.get("torrent_infohash") or "").lower()
-        if not re.fullmatch(r"[a-f0-9]{40}", h):
-            continue
-        out.append(result("BitTorrented", h, r.get("torrent_name") or h, r.get("torrent_total_size") or 0,
-                          r.get("torrent_seeders") or 0, r.get("torrent_leechers") or 0))
-    return out
-
-
-SOURCES = [("YTS", yts), ("TPB", tpb), ("1337x", x1337), ("EZTV", eztv),
-           ("Nyaa", nyaa), ("SubsPlease", subsplease), ("BitTorrented", bittorrented)]
+SOURCES = [("YTS", yts), ("TPB", tpb), ("1337x", x1337), ("LimeTorrents", limetorrents),
+           ("Nyaa", nyaa), ("SubsPlease", subsplease)]
 
 
 # --- search + select -------------------------------------------------------

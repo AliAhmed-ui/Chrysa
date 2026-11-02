@@ -26,7 +26,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-from . import naming
+from . import classify, naming
 from .config import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 
 KIND_MOVIE = "movie"
@@ -306,6 +306,10 @@ class Scanner:
                         self._scan_dir(os.path.join(path, sub))
                 return
 
+        # C2. A folder of un-numbered or dated episodes (yt-dlp downloads): classify the folder.
+        if len(direct) >= 2 and self._scan_classified_show(path, name, info, listing, direct):
+            return
+
         # D. A release folder holding one feature (and maybe samples or promos).
         #    A bare "2025/" archive folder has a year but no title: that is a container.
         if direct and (info.technical or (info.year is not None and info.title)):
@@ -422,6 +426,31 @@ class Scanner:
         else:
             title, year = info.title or self._parent_title(path) or naming.clean_stem(name), info.year
         return self._make_show(title, year, path, listing, direct)
+
+    def _scan_classified_show(
+        self, path: str, name: str, info: naming.ParsedName, listing: _Listing, direct: list[_File]
+    ) -> bool:
+        """Treat a folder as one show when :mod:`classify` says so; episodes are labelled EP-n."""
+        verdict = classify.classify_folder(name, [v.stem for v in direct], [v.size for v in direct])
+        if verdict.label != classify.TV_SHOW:
+            return False
+        title = info.title or naming.clean_stem(name)
+        show = self._make_show(title, info.year, path, listing, direct)
+        numbers = classify.order_episodes([v.stem for v in direct], [v.mtime for v in direct])
+        for video, number in zip(direct, numbers):
+            self._videos.append(
+                ScannedVideo(
+                    path=video.path, root=self._root, size=video.size, mtime=video.mtime,
+                    kind=KIND_EPISODE, title=f"EP-{number}",
+                    show_key=show.key, show_title=show.title, show_year=show.year,
+                    show_dir=show.directory, show_cover=show.cover,
+                    season=1, episode=number, cover=pick_episode_cover(listing.images, video.stem),
+                )
+            )
+        for sub in listing.subdirs:
+            if sub.casefold() not in _JUNK_DIRS:
+                self._scan_dir(os.path.join(path, sub))
+        return True
 
     def _parent_title(self, path: str) -> str | None:
         """Title for a bare ``Season 1`` folder: the name of the folder above it."""

@@ -14,3 +14,9 @@ __pycache__/
 chrysa.db
 thumbnails/
 .cache/
+
+# Android build outputs & local config
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

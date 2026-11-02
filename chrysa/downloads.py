@@ -12,12 +12,15 @@ import logging
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import torrentguard
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +86,10 @@ def _format_eta(seconds: float) -> str:
 
 class DownloadError(Exception):
     pass
+
+
+class _Cancelled(Exception):
+    """The user stopped a download while its file list was still being checked."""
 
 
 def is_valid_target(target: str) -> bool:
@@ -248,14 +255,69 @@ class DownloadClient:
             log.exception("download failed")
             self._emit(download, state="failed", message=str(error))
 
+    def _inspect_aria2(self, download: Download, workdir: Path) -> tuple[str, list[str]]:
+        """Fetch the torrent's file list first; return the target to run and the ``--select-file`` option for it."""
+        target = download.target
+        if target.startswith("magnet:?"):
+            self._emit(download, state="downloading", message="Checking contents…")
+            process = subprocess.Popen(
+                ["aria2c", "--dir", str(workdir), "--bt-metadata-only=true", "--bt-save-metadata=true",
+                 "--enable-color=false", "--console-log-level=error", "--", target],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            deadline = time.monotonic() + 240
+            while process.poll() is None:
+                if download._stop.is_set() or time.monotonic() > deadline:
+                    process.terminate()
+                    process.wait()
+                    if download._stop.is_set():
+                        raise _Cancelled
+                    raise DownloadError("Could not fetch the torrent's file list; no peers answered.")
+                time.sleep(0.5)
+            saved = next(workdir.glob("*.torrent"), None)
+            if saved is None:
+                raise DownloadError("Could not fetch the torrent's file list; no peers answered.")
+            data, target = saved.read_bytes(), str(saved)
+        elif target.startswith(("http://", "https://")):
+            request = urllib.request.Request(target, headers={"User-Agent": "Chrysa"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = response.read()
+            saved = workdir / "download.torrent"
+            saved.write_bytes(data)
+            target = str(saved)
+        else:
+            data = Path(target).expanduser().read_bytes()
+        try:
+            paths = torrentguard.file_paths(data)
+            keep = torrentguard.wanted_indices(paths)
+        except torrentguard.UnsafeTorrent as error:
+            raise DownloadError(str(error)) from error
+        except (ValueError, KeyError, IndexError) as error:
+            raise DownloadError("This torrent's file list could not be read, so it was not downloaded.") from error
+        if len(keep) == len(paths):
+            return target, []
+        return target, ["--select-file=" + ",".join(str(i + 1) for i in keep)]  # aria2 numbers files from 1
+
     def _run_aria2(self, download: Download) -> None:
+        workdir = Path(tempfile.mkdtemp(prefix="chrysa-torrent-"))
+        try:
+            target, select = self._inspect_aria2(download, workdir)
+            self._run_aria2_checked(download, target, select)
+        except _Cancelled:
+            if not download.discard:
+                self._emit(download, state="cancelled", speed=0, message="Paused — resumes next time")
+            download._stop.set()
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    def _run_aria2_checked(self, download: Download, target: str, select: list[str]) -> None:
         self._emit(download, state="downloading", message="Starting…")
         command = [
             "aria2c", "--dir", str(download.directory or self.directory), "--seed-time=0",
             "--bt-save-metadata=true", "--bt-load-saved-metadata=true", "--follow-torrent=true",
             "--continue=true", "--file-allocation=none", "--enable-color=false",
             "--summary-interval=1", "--console-log-level=warn", "--allow-overwrite=false",
-            "--auto-file-renaming=true", "--", download.target,
+            "--auto-file-renaming=true", *select, "--", target,
         ]
         process = download._process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
@@ -310,8 +372,20 @@ class DownloadClient:
         params.save_path = str(download.directory or self.directory)
         handle = session.add_torrent(params)
         self._emit(download, state="downloading", message="Fetching metadata…")
+        checked = False
         while not download._stop.is_set():
             status = handle.status()
+            if not checked and handle.has_metadata():
+                checked = True
+                info = handle.torrent_file()
+                files = info.files()
+                paths = [files.file_path(i) for i in range(files.num_files())]
+                try:
+                    keep = torrentguard.wanted_indices(paths)
+                except torrentguard.UnsafeTorrent as error:
+                    session.remove_torrent(handle)
+                    raise DownloadError(str(error)) from error
+                handle.prioritize_files([4 if i in set(keep) else 0 for i in range(len(paths))])
             name = status.name or download.name
             if status.name and status.name not in download.files:
                 download.files.append(status.name)

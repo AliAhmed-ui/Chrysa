@@ -378,7 +378,8 @@ class DownloadPage(QWidget):
             return  # a newer search superseded this one
         self.spinner.stop()
         self.set_results(found)
-        self.status.setText(f"{len(found)} result(s)." if found else "No results.")
+        summary = f" ({search.last_summary})" if search.last_summary else ""
+        self.status.setText(f"{len(found)} result(s).{summary}" if found else f"No results.{summary}")
         if found:
             self.results.setFocus()
 
