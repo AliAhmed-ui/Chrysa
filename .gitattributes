@@ -1,0 +1,5 @@
+# Shell scripts keep LF line endings even in a Windows checkout (core.autocrlf=true):
+# bash cannot run run.sh with CRLF. Batch files keep CRLF.
+*.sh            text eol=lf
+android/gradlew text eol=lf
+*.bat           text eol=crlf

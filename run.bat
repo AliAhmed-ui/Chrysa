@@ -17,5 +17,9 @@ if not defined BASH (
     pause
     exit /b 1
 )
-"%BASH%" "%~dp0run.sh" %*
+rem Git for Windows checks files out with CRLF line endings by default (core.autocrlf=true),
+rem and bash cannot run run.sh like that: convert it back to LF (git still sees it unchanged).
+pushd "%~dp0"
+"%BASH%" -c "grep -q $'\r' run.sh && sed -i 's/\r$//' run.sh"
+"%BASH%" run.sh %*
 if errorlevel 1 pause

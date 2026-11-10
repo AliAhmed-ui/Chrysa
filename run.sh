@@ -521,7 +521,9 @@ ask_desktop_shortcut() {
         read -r -p "[chrysa] Create a desktop shortcut for $APP_NAME? [y/n] " answer || return 0
     done
     mkdir -p "$DATA_DIR"
-    if [[ "${answer,,}" == y* ]]; then set_desktop_shortcut yes; echo yes > "$file"
+    if [[ "${answer,,}" == y* ]]; then
+        set_desktop_shortcut yes || warn "Could not create the desktop shortcut."
+        echo yes > "$file"
     else set_desktop_shortcut no; echo no > "$file"; log "No desktop shortcut."; fi
 }
 
