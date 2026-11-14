@@ -44,6 +44,7 @@ def run_gui(args) -> int:
     app.setDesktopFileName(APP_ID)
 
     paths = get_paths().ensure()
+    _log_to(paths.log_file)
 
     # One window per user: a second launch just raises the first.
     server_name = f"chrysa-{os.getuid()}"
@@ -104,6 +105,25 @@ def run_gui(args) -> int:
     server.close()
     lock.unlock()
     return code
+
+
+def _log_to(path) -> None:
+    """Browse's search, source-health, download and validation lines go to a small rotating log
+    (``CHRYSA_DEBUG=1`` also prints them, with debug detail, on the terminal)."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    logger = logging.getLogger("chrysa")
+    debug = os.environ.get("CHRYSA_DEBUG") == "1"
+    logger.setLevel(logging.DEBUG if debug else logging.INFO)
+    try:
+        handler = RotatingFileHandler(path, maxBytes=1 << 20, backupCount=2, encoding="utf-8")
+    except OSError:
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    if debug:
+        logger.addHandler(logging.StreamHandler())
 
 
 if __name__ == "__main__":

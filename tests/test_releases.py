@@ -62,8 +62,13 @@ class Ranking(unittest.TestCase):
 
 class Guard(unittest.TestCase):
     def test_only_video_and_companions_are_wanted(self):
-        paths = ["Film/film.mkv", "Film/setup.exe", "Film/film.srt", "Film/run.bat", "../evil.mkv"]
-        self.assertEqual(torrentguard.wanted_indices(paths), [0, 2])
+        paths = ["Film/film.mkv", "Film/film.nfo", "Film/film.srt", "Film/extras.rar", "../evil.mkv"]
+        self.assertEqual(torrentguard.wanted_indices(paths), [0, 1, 2])
+
+    def test_programs_next_to_the_video_reject_the_torrent(self):
+        for bait in ("Film/setup.exe", "Film/run.bat", "Film/crack.EXE", "film.mp4.exe", "Film/x.AppImage", "Film/a.ps1"):
+            with self.subTest(bait=bait), self.assertRaisesRegex(torrentguard.UnsafeTorrent, "programs"):
+                torrentguard.wanted_indices(["Film/film.mkv", "Film/film.srt", bait])
 
     def test_no_video_means_refused(self):
         with self.assertRaises(torrentguard.UnsafeTorrent):

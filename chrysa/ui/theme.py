@@ -178,11 +178,6 @@ QPushButton#ghost {{
 }}
 QPushButton#ghost:hover {{ background: {rgba(BG, 0.75)}; border-color: {ACCENT_ALT}; }}
 QPushButton#ghost:pressed {{ background: {BG}; }}
-QPushButton#skipIntro {{
-    background: {SURFACE_RAISED}; border: 1px solid {rgba(TEXT, 0.35)}; border-radius: 19px;
-    color: {TEXT}; font-size: 14px; font-weight: 600; padding: 0 22px;
-}}
-QPushButton#skipIntro:hover {{ background: {ACCENT}; border-color: {ACCENT}; color: {ON_ACCENT}; }}
 QPushButton#outline {{
     background: {SURFACE}; border: 1px solid {BORDER};
     border-radius: 16px; color: {TEXT_SOFT}; padding: 7px 14px;
@@ -247,6 +242,11 @@ QProgressBar#downloadBar {{
     color: {TEXT}; font-size: 11px; font-weight: 600; text-align: center;
 }}
 QProgressBar#downloadBar::chunk {{ background: {ACCENT}; border-radius: 8px; }}
+QTextBrowser#resultDetail {{
+    background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; color: {TEXT}; font-size: 12px; padding: 8px;
+}}
+QPushButton#sourcesButton {{ background: transparent; border: none; padding: 2px 6px; }}
+QPushButton#sourcesButton:hover {{ text-decoration: underline; }}
 QLabel#dialogTitle {{ font-size: 20px; font-weight: 700; }}
 QMessageBox {{ background: {SURFACE}; }}
 QMessageBox QLabel {{ color: {TEXT_SOFT}; font-size: 14px; }}

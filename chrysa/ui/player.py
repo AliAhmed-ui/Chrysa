@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 from ..config import SAVE_INTERVAL_MS, SKIP_SECONDS
 from ..library import Library
 from ..models import Media, format_clock
+from ..skip_control import SkipIntroControl
 from ..subtitles import ExternalSubtitle, find_external_subtitles
 from . import icons, theme
 from .. import mpris
@@ -43,8 +44,8 @@ _HIDE_AFTER_MS = 2500
 _HUD_MS = 500
 _TOP_HEIGHT = 60
 _BOTTOM_HEIGHT = 104
-_SKIP_SIZE = (140, 38)
-_SKIP_MARGIN = 28
+_SKIP_MARGIN = 28  # from the right edge, at the 720 p reference size
+_SKIP_GAP = 14  # above the control bar
 _INTRO_LEAD = 0.5  # the button appears this long before the detected intro starts
 
 
@@ -234,13 +235,8 @@ class PlayerPage(QWidget):
 
         self._build_top_bar()
         self._build_bottom_bar()
-        self._skip_intro = QPushButton("Skip Intro", self)
-        self._skip_intro.setObjectName("skipIntro")
-        self._skip_intro.setFixedSize(*_SKIP_SIZE)
-        self._skip_intro.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._skip_intro.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._skip_intro.clicked.connect(self.skip_intro)
-        self._skip_intro.hide()
+        self._skip_intro = SkipIntroControl(self, theme)
+        self._skip_intro.activated.connect(self.skip_intro)
         self._hud = QLabel(self)
         self._hud.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._hud.setObjectName("playerHud")
@@ -368,9 +364,7 @@ class PlayerPage(QWidget):
         self.surface.setGeometry(0, 0, width, height)
         self.top_bar.setGeometry(0, 0, width, _TOP_HEIGHT)
         self.controls.setGeometry(0, height - _BOTTOM_HEIGHT, width, _BOTTOM_HEIGHT)
-        self._skip_intro.move(
-            width - _SKIP_SIZE[0] - _SKIP_MARGIN, height - _BOTTOM_HEIGHT - _SKIP_SIZE[1] - _SKIP_MARGIN // 2
-        )
+        self._place_skip_intro()
         self.top_bar.raise_()
         self.controls.raise_()
         self._skip_intro.raise_()
@@ -440,7 +434,7 @@ class PlayerPage(QWidget):
         self._media = media
         self._next = self._library.next_episode(media)
         self._intro = self._library.intro_for(media)
-        self._skip_intro.hide()
+        self._skip_intro.reset()
         self._externals = find_external_subtitles(media.path)
         self._external_ids, self._embedded_spu, self._pending_external = {}, set(), None
         self._expected_start = start
@@ -490,7 +484,7 @@ class PlayerPage(QWidget):
         self.surface.setUpdatesEnabled(True)
         self._media = None
         self._intro = None
-        self._skip_intro.hide()
+        self._skip_intro.reset()
 
     def close_player(self) -> None:
         """Leave the player and return to the library."""
@@ -568,6 +562,21 @@ class PlayerPage(QWidget):
         self._set_play_icon(state == vlc.State.Playing)
         self._update_skip_intro(position)
 
+    def _place_skip_intro(self) -> None:
+        """Bottom right, just above the control bar (so it clears the subtitles, which sit under it), scaled with the window."""
+        scale = max(0.9, min(1.4, self.height() / 720))
+        self._skip_intro.set_scale(scale)
+        control = self._skip_intro
+        control.move(
+            self.width() - control.width() - round(_SKIP_MARGIN * scale),
+            self.height() - _BOTTOM_HEIGHT - round(_SKIP_GAP * scale) - control.pill_height(),
+        )
+
+    def refresh_intro(self, media_id: int) -> None:
+        """An analysis finished while this video plays: pick up what it found for it."""
+        if self._media is not None and self._media.id == media_id:
+            self._intro = self._library.intro_for(self._media)
+
     def _update_skip_intro(self, position: float) -> None:
         """Show "Skip Intro" while the playhead is inside the detected opening titles."""
         inside = (
@@ -575,19 +584,16 @@ class PlayerPage(QWidget):
             and self._position_valid
             and self._intro[0] - _INTRO_LEAD <= position < self._intro[1] - 1.0
         )
-        if inside == self._skip_intro.isHidden():
-            if inside:
-                self._skip_intro.winId()  # a real window, so it stacks above libVLC's video
-                self._skip_intro.show()
-                self._skip_intro.raise_()
-            else:
-                self._skip_intro.hide()
+        if inside:
+            self._skip_intro.present()
+            self._skip_intro.raise_()
+        else:
+            self._skip_intro.dismiss()
 
     def skip_intro(self) -> None:
         """Jump to the end of the opening titles."""
         if self._media is None or self._intro is None:
             return
-        self._skip_intro.hide()
         self.seek(self._intro[1])
         self._show_hud("Intro skipped")
 
@@ -1038,6 +1044,8 @@ class PlayerPage(QWidget):
             self.close_player()
         elif key == Qt.Key.Key_M:
             self.toggle_mute()
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._skip_intro.is_presented:
+            self._skip_intro.activate()
         elif key in (Qt.Key.Key_N, Qt.Key.Key_MediaNext):
             self.play_next()
         elif key == Qt.Key.Key_S:

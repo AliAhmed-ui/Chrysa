@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import QByteArray, QPoint, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QDesktopServices, QKeySequence, QPainter, QShortcut
@@ -354,14 +355,16 @@ class MainWindow(QMainWindow):
 
         self.player = PlayerPage(library)
         self.player.closed.connect(self._player_closed)
+        self.intros.introFound.connect(self.player.refresh_intro)
         self.root = QStackedWidget()
         self.root.addWidget(self.browser)
         self.root.addWidget(self.player)
-        self.download_page = DownloadPage(state_file=library.paths.data_dir / "downloads.json")
+        self.download_page = DownloadPage(state_file=library.paths.data_dir / "downloads.json", db=library.db)
         saved_dir = self.library.setting(DOWNLOAD_DIR_SETTING)
         if saved_dir:
             self.download_page.set_download_dir(saved_dir)
         self.download_page.changeFolderRequested.connect(self.change_download_dir)
+        self.download_page.mediaAdmitted.connect(self._media_admitted)
         self.root.addWidget(self.download_page)
         self.mode_switch = ModeSwitch()
         self.mode_bar = QWidget()
@@ -452,6 +455,15 @@ class MainWindow(QMainWindow):
             return
         if not self._pick_download_dir(str(DEFAULT_DOWNLOAD_DIR)):
             self._store_download_dir(DEFAULT_DOWNLOAD_DIR)
+
+    def _media_admitted(self, paths: list) -> None:
+        """A Browse download passed validation and now sits in the download folder: show it in the Library."""
+        roots = [Path(folder.path) for folder in self.library.folders()]
+        if any(Path(p).resolve().is_relative_to(root.resolve()) for p in paths for root in roots):
+            self.rescan()
+        elif paths:
+            self._set_status(f"Verified and saved to {Path(paths[0]).parent}; add that folder to the library to "
+                             "see it here.", 10000)
 
     def change_download_dir(self) -> None:
         self._pick_download_dir(str(self.download_page.client.directory))

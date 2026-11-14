@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Iterable
 
@@ -14,6 +15,8 @@ from ..updater import check_for_update
 from ..models import Media, Show
 from ..subtitles import fetch_missing_subtitles
 from ..thumbnails import PRIORITY_BACKGROUND, PRIORITY_HOME, PRIORITY_VISIBLE, ThumbnailWorkers
+
+log = logging.getLogger("chrysa.intro")
 
 
 class ScanWorker(QThread):
@@ -173,12 +176,15 @@ class IntroWorker(QThread):
 
     def run(self) -> None:
         try:
-            for episodes, done in self._library.intro_jobs():
+            for job in self._library.intro_jobs():
                 if self.isInterruptionRequested():
                     break
-                intro.analyse_season(episodes, done, self._store, self._should_stop)
-        except Exception:  # a damaged file must never take the app down
-            pass
+                try:
+                    intro.analyse_season(job, self._library, self._should_stop, self.introFound.emit)
+                except Exception:  # one damaged season must not stop the others
+                    log.exception("[INTRO] season %s of show %s failed", job.season, job.show_id)
+        except Exception:
+            log.exception("[INTRO] intro analysis failed")
         finally:
             self._library.db.close()
 
@@ -188,10 +194,7 @@ class IntroWorker(QThread):
                 return True
         return self.isInterruptionRequested()
 
-    def _store(self, media: Media, found: intro.Intro | None) -> None:
-        self._library.save_intro(media, (found.start, found.end) if found else None)
-        if found:
-            self.introFound.emit(media.id)
+
 
 
 class IntroService(QObject):

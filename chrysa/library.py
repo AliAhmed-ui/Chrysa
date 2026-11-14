@@ -11,6 +11,9 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+import zlib
+from zlib import error as zlib_error
 
 from . import intro, naming
 from .config import FEATURE_LENGTH_SECONDS, MIN_PLAYED_SECONDS, SHORT_CLIP_SECONDS, Paths, default_media_dir
@@ -25,7 +28,19 @@ LOG_WRITE_INTERVAL = 5.0  # seconds between watch-log file writes while playing 
 
 DETAILS_RETRY_SECONDS = 30 * 24 * 3600  # an empty answer from the metadata service is asked again after this long
 
+INTRO_RETRY_SECONDS = 24 * 3600  # an episode whose audio could not be read is tried again after this long
+
 THUMB_PENDING, THUMB_READY, THUMB_FAILED = 0, 1, 2
+
+
+@dataclass
+class SeasonJob:
+    """A season whose opening titles are not fully judged yet."""
+
+    show_id: int
+    season: int
+    episodes: list  # Media, in order
+    done: set  # ids already judged
 
 _MEDIA_SELECT = """
 SELECT m.id, m.path, m.kind, m.title, m.year, m.show_id, s.title AS show_title,
@@ -651,43 +666,119 @@ class Library:
 
     # --------------------------------------------------------------- intros
 
+    def _intro_version_check(self) -> None:
+        """Results and cached features of an older detection are dropped, so the seasons are analysed again."""
+        if self.setting("intro_algorithm") != str(intro.ALGORITHM):
+            with self.db.transaction() as tx:
+                for table in ("episode_intros", "season_intro_profiles", "intro_features"):
+                    tx.execute(f"DELETE FROM {table}")
+            self.set_setting("intro_algorithm", intro.ALGORITHM)
+
     def intro_for(self, media: Media) -> tuple[float, float] | None:
-        """The cached opening-titles window of *media*, or None when unknown or not found."""
+        """Where the opening titles of *media* are, or None: unknown, not in this episode, or not certain enough."""
         row = self.db.connection().execute(
-            "SELECT start_seconds, end_seconds, size FROM intros WHERE media_id = ?", (media.id,)
+            "SELECT start_seconds, end_seconds, size, confidence, analysis_version FROM episode_intros "
+            "WHERE media_id = ? AND present = 1", (media.id,)
         ).fetchone()
-        if row is None or row["start_seconds"] is None or row["size"] != media.size:
+        if (row is None or row["size"] != media.size or row["analysis_version"] != intro.ALGORITHM
+                or row["confidence"] < intro.MIN_CONFIDENCE or row["end_seconds"] <= row["start_seconds"]):
             return None
         return row["start_seconds"], row["end_seconds"]
 
-    def save_intro(self, media: Media, window: tuple[float, float] | None) -> None:
-        start, end = window if window else (None, None)
+    def intro_features(self, media: Media):
+        """The cached coarse audio features of *media*, or None."""
+        row = self.db.connection().execute(
+            "SELECT size, analysis_version, duration, frames, data FROM intro_features WHERE media_id = ?", (media.id,)
+        ).fetchone()
+        if row is None or row["size"] != media.size or row["analysis_version"] != intro.ALGORITHM:
+            return None
+        try:
+            return intro.Features.from_blob(row["data"], row["frames"], row["duration"])
+        except (ValueError, zlib_error):
+            return None
+
+    def save_intro_features(self, media: Media, features) -> None:
         self.db.connection().execute(
-            "INSERT INTO intros (media_id, start_seconds, end_seconds, size) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(media_id) DO UPDATE SET start_seconds = excluded.start_seconds, "
-            "end_seconds = excluded.end_seconds, size = excluded.size",
-            (media.id, start, end, media.size),
+            "INSERT INTO intro_features (media_id, size, analysis_version, duration, sample_rate, frames, data, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id) DO UPDATE SET size = excluded.size, "
+            "analysis_version = excluded.analysis_version, duration = excluded.duration, "
+            "sample_rate = excluded.sample_rate, frames = excluded.frames, data = excluded.data, "
+            "created_at = excluded.created_at",
+            (media.id, media.size, intro.ALGORITHM, features.duration, intro.RATE, features.frames,
+             features.to_blob(), time.time()),
         )
 
-    def intro_jobs(self) -> list[tuple[list[Media], set[int]]]:
-        """Seasons (two episodes or more) with episodes not yet analysed: ``(episodes, analysed ids)``."""
-        if self.setting("intro_algorithm") != str(intro.ALGORITHM):
-            self.db.connection().execute("DELETE FROM intros")  # detection changed: look again
-            self.set_setting("intro_algorithm", intro.ALGORITHM)
-        analysed = {
-            r["media_id"]: r["size"]
-            for r in self.db.connection().execute("SELECT media_id, size FROM intros")
+    def intro_profiles(self, show_id: int, season: int) -> list:
+        rows = self.db.connection().execute(
+            "SELECT * FROM season_intro_profiles WHERE show_id = ? AND season = ? AND analysis_version = ? "
+            "ORDER BY variant", (show_id, season, intro.ALGORITHM)
+        ).fetchall()
+        profiles = []
+        for r in rows:
+            try:
+                template = intro.np.frombuffer(zlib.decompress(r["fingerprint"]), dtype=intro.np.int8).reshape(
+                    r["frames"], 2 * intro.BANDS).copy()
+            except (ValueError, zlib_error):
+                continue
+            profiles.append(intro.Profile(r["variant"], template, r["confidence"], r["quality"], r["occurrence_count"],
+                                          r["episode_count"], r["canonical_duration"], r["created_at"]))
+        return profiles
+
+    def save_season_intros(self, show_id: int, season: int, profiles: list, results: list) -> None:
+        """Store a season's intro profiles and what was concluded for each episode, atomically.
+
+        *results* is ``[(media, EpisodeResult)]``. The profiles replace the season's earlier ones.
+        """
+        now = time.time()
+        with self.db.transaction() as tx:
+            old = {r["variant"]: r["created_at"] for r in tx.execute(
+                "SELECT variant, created_at FROM season_intro_profiles WHERE show_id = ? AND season = ?", (show_id, season))}
+            tx.execute("DELETE FROM season_intro_profiles WHERE show_id = ? AND season = ?", (show_id, season))
+            ids = {}
+            for p in profiles:
+                blob = zlib.compress(p.template.tobytes(), 3)
+                ids[p.variant] = tx.execute(
+                    "INSERT INTO season_intro_profiles (show_id, season, variant, fingerprint, frames, confidence, quality, "
+                    "occurrence_count, episode_count, canonical_duration, analysis_version, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (show_id, season, p.variant, blob, len(p.template), p.confidence, p.quality, p.occurrences, p.episodes,
+                     p.duration, intro.ALGORITHM, old.get(p.variant) or p.created or now, now),
+                ).lastrowid
+            for media, r in results:
+                tx.execute(
+                    "INSERT INTO episode_intros (media_id, profile_id, size, analysis_version, present, status, start_seconds, "
+                    "end_seconds, confidence, similarity, detected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(media_id) DO UPDATE SET profile_id = excluded.profile_id, size = excluded.size, "
+                    "analysis_version = excluded.analysis_version, present = excluded.present, status = excluded.status, "
+                    "start_seconds = excluded.start_seconds, end_seconds = excluded.end_seconds, "
+                    "confidence = excluded.confidence, similarity = excluded.similarity, detected_at = excluded.detected_at",
+                    (media.id, ids.get(r.variant), media.size, intro.ALGORITHM, int(r.present), r.status,
+                     r.start if r.present else None, r.end if r.present else None, r.confidence, r.similarity, now),
+                )
+
+    def intro_jobs(self) -> list:
+        """Seasons (two episodes or more) with episodes not yet judged: ``SeasonJob`` objects, watched ones first."""
+        self._intro_version_check()
+        judged = {
+            r["media_id"]: (r["size"], r["status"], r["detected_at"])
+            for r in self.db.connection().execute(
+                "SELECT media_id, size, status, detected_at FROM episode_intros WHERE analysis_version = ?", (intro.ALGORITHM,))
         }
         seasons: dict[tuple[int, int], list[Media]] = {}
         for media in self._media("WHERE m.kind = 'episode' AND m.show_id IS NOT NULL AND m.season > 0", order=_EPISODE_ORDER):
             seasons.setdefault((media.show_id, media.season), []).append(media)
+        now = time.time()
         jobs = []
-        for episodes in seasons.values():
-            done = {m.id for m in episodes if analysed.get(m.id) == m.size}
+        for (show_id, season), episodes in seasons.items():
+            done = set()
+            for m in episodes:
+                state = judged.get(m.id)
+                if state and state[0] == m.size and not (state[1] == "unreadable" and now - state[2] > INTRO_RETRY_SECONDS):
+                    done.add(m.id)
             if len(episodes) >= 2 and len(done) < len(episodes):
-                jobs.append((episodes, done))
+                jobs.append(SeasonJob(show_id, season, episodes, done))
         # What you are watching first: a season you have just started is ready before a backlog.
-        jobs.sort(key=lambda job: -max((m.last_watched or 0.0 for m in job[0]), default=0.0))
+        jobs.sort(key=lambda job: -max((m.last_watched or 0.0 for m in job.episodes), default=0.0))
         return jobs
 
     def thumbnail_jobs(self) -> list[Media]:

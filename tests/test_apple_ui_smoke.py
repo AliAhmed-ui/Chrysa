@@ -78,6 +78,7 @@ class BrowsingWindow(LibraryCase):
         player._update_skip_intro(30.0)
         self.assertTrue(player._skip_intro.isVisibleTo(player))
         player._update_skip_intro(64.5)  # the last second is not worth a button
+        self.spin(300)  # it eases out
         self.assertFalse(player._skip_intro.isVisibleTo(player))
         player._intro = None
         player._update_skip_intro(30.0)

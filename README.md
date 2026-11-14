@@ -56,6 +56,20 @@ Nothing else is sent anywhere, and there are no accounts, API keys or analytics.
 - **Embedded player** — seek bar, ±10 s, volume, subtitle and audio track menus,
   fullscreen, *Next Episode*, and automatic play of the next episode when one ends.
   The control bars hide after three seconds without input.
+- **Skip Intro** — Chrysa works out which recurring piece of audio in a season is its opening and where it sits
+  in *each* episode, fully offline (`chrysa/intro.py`; needs `numpy` and `ffmpeg`). Every episode is decoded once
+  (in the background, at low priority) to a compact spectrogram that is cached in the library database. Pairs of
+  episodes are compared at every offset, so an opening can be at 0:30 or at 10:00, after a cold open or a recap, and
+  have a different length in different episodes. Matches are clustered across the season and judged: the more
+  episodes contain it the stronger the evidence, while credits music, a song that recurs in the middle of
+  episodes and recap stings are told apart from an opening by their position and length. A season may have
+  several variants (an opening that changes mid-season), and an episode without the intro simply has no button.
+  Skip Intro appears only for an episode whose own window is known with enough confidence; when in doubt, nothing
+  is shown. Episodes added later are matched against what was already learned and only re-judge the season if they
+  match nothing. The button is a compact pill at the bottom right (scaled with the window, clear of the control
+  bar and subtitles) that eases in and out; click it, or press **Enter** while it is showing. `CHRYSA_DEBUG=1`
+  prints the `[INTRO]` log (also in `~/.local/share/chrysa/chrysa.log`): episodes analysed, candidate clusters,
+  recurrence, per-episode windows and confidences.
 - **Resume everywhere** — the position is written to SQLite every 3 seconds and
   immediately on pause or exit. Opening a partly watched item continues from that
   spot (*Start Over* is in the player and the right-click menu).
@@ -68,13 +82,49 @@ Nothing else is sent anywhere, and there are no accounts, API keys or analytics.
 - **Browse (Search & Download)** — the switch at the top of the window. Right (default) is
   the normal offline library; left opens Browse. Nothing touches the network until you press
   *Allow Internet Access*. The first time, Chrysa asks where to save downloads (*Change download
-  folder* changes it). Searching queries YTS, The Pirate Bay, 1337x, EZTV, Nyaa, SubsPlease,
-  BitTorrented and the Internet Archive (`chrysa/bd.py`, also usable alone: `python3 bd.py "query"`).
-  Results (↑/↓, Enter or click) are sorted by seeders; press **D** to download. Each download has a
-  progress bar with size, speed, ETA and peers. Select one and press **C** to cancel it and delete
-  its partial files. Unfinished downloads are saved when you quit and resume after you press *Allow
-  Internet Access* next time. Downloading uses `aria2` (installed by `run.sh`) or the `libtorrent`
-  Python bindings. Ctrl+D flips between the two modes. Only download what you have the right to.
+  folder* changes it). Only download what you have the right to.
+  - **Search.** YTS, The Pirate Bay, 1337x, LimeTorrents, EZTV, Nyaa, SubsPlease and the Internet Archive
+    are asked in parallel, each with its own timeout (`chrysa/bd.py` + `chrysa/sources.py`; `bd.py` also works
+    alone: `python3 bd.py "query"`). A slow or broken site never blocks or hides the others. The line under
+    the search box counts sources as they answer, then summarises: results, unique releases, high-quality
+    matches, hidden unrelated/suspicious ones. Answers are cached for a few minutes.
+  - **Understanding and ranking.** The query is matched to the title you meant and to what you are after
+    (movie, episode, season, documentary; mixed results when unsure). Release names are read for resolution,
+    source (WEB-DL, BluRay…), codecs, audio, HDR and release group; nothing that is not written there is
+    shown. The same torrent listed by several sites appears once ("TPB · LimeTorrents"), and re-uploads of a
+    release collapse into one row and become its fallbacks. Software, cracks, password/installer bait, double
+    extensions, samples and implausible sizes are hidden or flagged. The order is **not** "most seeders":
+    seeders only estimate availability; once Chrysa has downloaded the same torrent, release group or
+    source before, the *measured* speed increasingly decides (`chrysa/ranking.py`, history in SQLite).
+  - **Result rows and details.** Each row shows the title, `Movie • 1080p • WEB-DL • H.264 • AAC`, and
+    size · swarm health · past speed · seeds/peers · sources. The panel on the right explains the highlighted
+    result: every known fact and *why it ranks there*. Keys are unchanged: ↑/↓ move, Enter or click selects,
+    **D** downloads, **C** cancels the selected download.
+  - **Source health.** *Sources n/m* (beside the status line) lists each source as Healthy, Degraded, Changed,
+    Offline or Disabled with its last error on hover; untick one to stop using it. A site whose page
+    structure changed is reported as *changed*, an anti-bot page as *blocked*, never silently as "no
+    results". Mirrors that work are remembered. Hosts, timeouts and on/off can be overridden without code in
+    `~/.local/share/chrysa/sources.json`:
+    `{"version": 1, "sources": {"1337x": {"hosts": ["1337x.example"], "timeout": 10, "disabled": false}}}`.
+    Search, source, download and validation events are logged to `~/.local/share/chrysa/chrysa.log`
+    (`CHRYSA_DEBUG=1` also prints them).
+  - **Downloading.** The torrent's file list is read before anything is fetched: a torrent shipping a
+    program or script (`setup.exe`, `crack.exe`, `movie.mp4.exe`, `.sh`, `.AppImage`…) is rejected, and
+    only video, subtitles and artwork are fetched. The same torrent can never run twice; an equivalent
+    release already downloading blocks a second one, and one already in your Library (or verified before)
+    asks for a second **D**. Each download shows speed, ETA, size, peers and seeds, plus measured performance
+    (average and peak). A download that genuinely stalls with no peers early on switches, at most twice, to
+    an equivalent release. Unfinished downloads are saved when you quit and resume where they left off
+    after *Allow Internet Access*. Downloading uses `aria2` (installed by `run.sh`) or the `libtorrent`
+    Python bindings. Ctrl+D flips between the two modes.
+  - **Quarantine and validation.** Downloads land in a hidden `.chrysa-incoming` folder inside the download
+    folder. When finished, the actual files are checked, not their names (`chrysa/validate.py`): unwanted
+    files are removed; any file whose bytes are a program rejects the download; every video must carry a real
+    container signature; `ffprobe` must find a video stream, duration and resolution; `ffmpeg` decodes the
+    start and the end (truncated/corrupt files fail); ClamAV scans it if installed (otherwise the check says
+    *Malware scan unavailable*, never "safe"). Only then is it moved into the download folder, and the
+    Library rescans if that folder is part of it. A rejected download is deleted and never reaches the
+    Library.
 - **Offline thumbnails** — a `poster.jpg` / `cover.jpg` / `folder.jpg` next to a video
   is used if present; otherwise ffmpeg grabs a frame 15 % into the file (retrying
   further in if that frame is black) and caches it.
@@ -206,10 +256,14 @@ image with the same name as an episode next to it.
 
 ```
 chrysa/
-  search.py      online search providers       downloads.py   background torrent client
+  search.py      Browse search pipeline        downloads.py   background torrent client + monitor
+  bd.py          torrent sites (fetch/parse)   sources.py     source adapters, contract, health
+  ranking.py     release tags, safety, scores  validate.py    file checks before the Library
+  acquire.py     quarantine → Library glue     history.py     source health + download history
   config.py      paths and thresholds          naming.py      guessit glue and sanity checks
   scanner.py     folder walk + classification  probe.py       ffprobe
   database.py    SQLite schema, connections    library.py     sync, queries, resume logic
+  intro.py       season-level intro detection  skip_control.py  the Skip Intro pill
   thumbnails.py  ffmpeg frame grabs            subtitles.py   external subtitle discovery
   models.py      data objects, formatting      metadata.py   TVMaze/Wikipedia plots, art
   cli.py / app.py  entry points

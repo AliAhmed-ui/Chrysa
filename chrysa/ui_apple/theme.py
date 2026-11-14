@@ -282,13 +282,6 @@ QPushButton#ghost {{
 QPushButton#ghost:hover {{ background: {rgba('#000000', 0.55)}; }}
 QPushButton#ghost:pressed {{ background: {rgba('#000000', 0.70)}; }}
 QPushButton#ghost:focus {{ border: 2px solid {FOCUS_RING}; }}
-QPushButton#skipIntro {{
-    background: {rgba('#ffffff', 0.94)}; border: 1px solid {rgba('#ffffff', 0.60)}; border-radius: 21px;
-    color: #111114; font-size: {px['body']}px; font-weight: 700; letter-spacing: 0.3px; padding: 0 22px 0 24px;
-}}
-QPushButton#skipIntro:hover {{ background: {ACCENT}; border-color: {ACCENT}; color: {ON_ACCENT}; }}
-QPushButton#skipIntro:pressed {{ background: {ACCENT_PRESSED}; border-color: {ACCENT_PRESSED}; color: {ON_ACCENT}; }}
-QPushButton#skipIntro:focus {{ border: 2px solid {FOCUS_RING}; }}
 QPushButton#outline {{
     background: transparent; border: 1px solid {SEPARATOR}; border-radius: {RADIUS_M}px;
     color: {TEXT_SOFT}; padding: 5px 14px;
@@ -359,6 +352,12 @@ QProgressBar#downloadBar {{
     max-height: 8px; min-height: 8px;
 }}
 QProgressBar#downloadBar::chunk {{ background: {ACCENT}; border-radius: 4px; }}
+QTextBrowser#resultDetail {{
+    background: {SURFACE}; border: 1px solid {SEPARATOR}; border-radius: {RADIUS_M}px; color: {TEXT};
+    font-size: {px['footnote']}px; padding: 8px;
+}}
+QPushButton#sourcesButton {{ background: transparent; border: none; padding: 2px 6px; }}
+QPushButton#sourcesButton:hover {{ text-decoration: underline; }}
 QLabel#inlineWarning {{ color: {WARNING}; font-size: {px['callout']}px; font-weight: 500; }}
 QLineEdit#searchBox[large="true"] {{ font-size: {px['headline']}px; padding: 12px 14px 12px 14px; border-radius: {RADIUS_M}px; }}
 QLineEdit#searchBox[large="true"]:focus {{ padding: 11px 13px 11px 13px; }}

@@ -1,7 +1,13 @@
 """Decide which files inside a torrent may be downloaded: video, subtitles and artwork only.
 
-A torrent's file list is fixed by its metadata. Anything that is not a video or a harmless companion file
-(an ``.exe``, a script, an archive, a disk image...) is never fetched, and a torrent with no video at all is refused.
+A torrent's file list is fixed by its metadata, so it is checked before a single payload byte is fetched:
+
+* a torrent that ships a program or script (``setup.exe``, ``crack.exe``, ``run.sh``, ``movie.mp4.exe``...) next
+  to its video is refused outright; media releases never need one, and its presence marks the torrent as bait;
+* anything else that is not a video or a harmless companion file (archives, disk images...) is never fetched;
+* a torrent with no video at all is refused.
+
+What the downloaded files really are is checked afterwards by :mod:`chrysa.validate`; extensions prove nothing.
 """
 
 from __future__ import annotations
@@ -47,6 +53,19 @@ def file_paths(torrent: bytes) -> list[str]:
     ]
 
 
+# Executables and scripts on Windows, Linux, macOS and Android.
+EXECUTABLE_EXT = {
+    ".exe", ".dll", ".scr", ".bat", ".cmd", ".com", ".pif", ".msi", ".msp", ".lnk", ".hta", ".cpl", ".ps1", ".psm1",
+    ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".jar", ".py", ".pyw", ".pl", ".rb", ".sh", ".bash", ".run", ".bin",
+    ".appimage", ".deb", ".rpm", ".desktop", ".apk", ".app", ".dmg", ".pkg", ".command", ".reg", ".inf",
+}
+
+
+def executables(paths: list[str]) -> list[str]:
+    """The paths that are programs or scripts by their final extension."""
+    return [path for path in paths if PurePosixPath(path).suffix.lower() in EXECUTABLE_EXT]
+
+
 def allowed(path: str) -> bool:
     parts = PurePosixPath(path).parts
     if ".." in parts or path.startswith("/"):
@@ -56,6 +75,11 @@ def allowed(path: str) -> bool:
 
 def wanted_indices(paths: list[str]) -> list[int]:
     """Zero-based indices of the files to download. Raises :class:`UnsafeTorrent` if there is no video in it."""
+    bait = executables(paths)
+    if bait:
+        names = ", ".join(PurePosixPath(p).name for p in bait[:3])
+        raise UnsafeTorrent(f"This torrent contains programs ({names}), so it was rejected. "
+                            "Real video releases never include them.")
     keep = [i for i, path in enumerate(paths) if allowed(path)]
     if not any(PurePosixPath(paths[i]).suffix.lower() in VIDEO_EXT for i in keep):
         raise UnsafeTorrent("This torrent contains no video files, so it was not downloaded.")

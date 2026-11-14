@@ -13,16 +13,20 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QProgressBar,
     QPushButton,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import downloads, search
+from .. import acquire, downloads, presentation, search, sources
+from ..history import History
+from ..orb import ScrapingOrb
 from ..search import SearchError, SearchResult
 from . import icons, theme
 
@@ -30,9 +34,14 @@ RESULT_ROLE = Qt.ItemDataRole.UserRole
 WARNING_TEXT = "Warning: Searching here will enable the app to access the internet."
 
 
+def _dark() -> bool:
+    return theme._luminance(theme.BG) < 0.4
+
+
 class SearchWorker(QThread):
     found = pyqtSignal(int, object)  # request id, list[SearchResult]
     failed = pyqtSignal(int, str)
+    progressed = pyqtSignal(int, object)  # request id, progress event dict
 
     def __init__(self, request_id: int, query: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -41,7 +50,8 @@ class SearchWorker(QThread):
 
     def run(self) -> None:
         try:
-            self.found.emit(self.request_id, search.search(self.query))
+            found = search.search(self.query, progress=lambda event: self.progressed.emit(self.request_id, event))
+            self.found.emit(self.request_id, found)
         except SearchError as error:
             self.failed.emit(self.request_id, str(error))
         except Exception as error:
@@ -49,10 +59,14 @@ class SearchWorker(QThread):
 
 
 class ResultDelegate(QStyledItemDelegate):
-    """Two lines per row: the title, then the metadata string."""
+    """Three lines per row: the title, what the release is, then size · health · speed · swarm · source.
+
+    Results without ranking data (plain :class:`SearchResult`) keep the original two lines.
+    """
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
-        return QSize(option.rect.width(), 62)
+        result: SearchResult = index.data(RESULT_ROLE)
+        return QSize(option.rect.width(), 80 if result is not None and result.candidate is not None else 62)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         result: SearchResult = index.data(RESULT_ROLE)
@@ -71,21 +85,52 @@ class ResultDelegate(QStyledItemDelegate):
             painter.setBrush(hover)
             painter.drawRoundedRect(rect, theme.RADIUS_S + 2, theme.RADIUS_S + 2)
         text_rect = rect.adjusted(14, 8, -14, -8)
+        candidate = result.candidate
         title_font = QFont(option.font)
         title_font.setPixelSize(15)
         title_font.setWeight(QFont.Weight.DemiBold)
         painter.setFont(title_font)
         painter.setPen(QColor(theme.TEXT))
-        title = painter.fontMetrics().elidedText(result.title, Qt.TextElideMode.ElideRight, text_rect.width())
+        title = painter.fontMetrics().elidedText(candidate.display_title if candidate else result.title,
+                                                 Qt.TextElideMode.ElideRight, text_rect.width())
         painter.drawText(QRect(text_rect.left(), text_rect.top(), text_rect.width(), 22), Qt.AlignmentFlag.AlignVCenter, title)
         meta_font = QFont(option.font)
         meta_font.setPixelSize(12)
         painter.setFont(meta_font)
         painter.setPen(QColor(theme.TEXT_MUTED))
-        painter.drawText(
-            QRect(text_rect.left(), text_rect.top() + 24, text_rect.width(), 18), Qt.AlignmentFlag.AlignVCenter, result.metadata
-        )
+        if candidate is None:
+            painter.drawText(
+                QRect(text_rect.left(), text_rect.top() + 24, text_rect.width(), 18), Qt.AlignmentFlag.AlignVCenter,
+                result.metadata)
+        else:
+            spec = painter.fontMetrics().elidedText(presentation.spec_line(candidate) or result.title,
+                                                    Qt.TextElideMode.ElideRight, text_rect.width())
+            painter.drawText(QRect(text_rect.left(), text_rect.top() + 22, text_rect.width(), 18),
+                             Qt.AlignmentFlag.AlignVCenter, spec)
+            paint_segments(painter, presentation.status_segments(candidate),
+                           QRect(text_rect.left(), text_rect.top() + 42, text_rect.width(), 18))
         painter.restore()
+
+
+def paint_segments(painter: QPainter, segments: list[tuple[str, str]], rect: QRect) -> None:
+    """Draw ``(text, tone)`` pieces left to right, separated by dots, eliding whatever does not fit."""
+    x, right, metrics, dark = rect.left(), rect.right(), painter.fontMetrics(), _dark()
+    separator = "  ·  "
+    for i, (text, tone) in enumerate(segments):
+        if i:
+            width = metrics.horizontalAdvance(separator)
+            if x + width >= right:
+                break
+            painter.setPen(QColor(theme.TEXT_MUTED))
+            painter.drawText(QRect(x, rect.top(), width, rect.height()), Qt.AlignmentFlag.AlignVCenter, separator)
+            x += width
+        piece = metrics.elidedText(text, Qt.TextElideMode.ElideRight, right - x)
+        width = metrics.horizontalAdvance(piece)
+        painter.setPen(QColor(presentation.tone_color(tone, dark, theme)))
+        painter.drawText(QRect(x, rect.top(), width, rect.height()), Qt.AlignmentFlag.AlignVCenter, piece)
+        x += width
+        if piece != text:
+            break
 
 
 class ResultList(QListWidget):
@@ -101,6 +146,7 @@ class ResultList(QListWidget):
         self.setMouseTracking(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # rows elide instead
         self.itemClicked.connect(lambda item: self.selectRequested.emit(item.data(RESULT_ROLE)))
         self._empty = ("", "")  # title, detail shown while the list has no rows
 
@@ -139,6 +185,63 @@ class ResultList(QListWidget):
             super().keyPressEvent(event)
 
 
+class ResultDetail(QTextBrowser):
+    """Everything known about the highlighted result, and why it ranks where it does."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("resultDetail")
+        self.setOpenLinks(False)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keyboard stays on the result list
+        self.setMinimumWidth(300)
+        self.setMaximumWidth(380)
+        self.result: SearchResult | None = None
+        self.show_result(None)
+
+    def show_result(self, result: SearchResult | None) -> None:
+        self.result = result
+        self.setHtml(presentation.detail_html(
+            result.candidate if result else None, _dark(), theme,
+            result.title if result else "", result.metadata if result else ""))
+
+
+class SourcesButton(QPushButton):
+    """``Sources 6/7``: opens a menu with each source's health; untick a source to stop asking it."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__("Sources", parent)
+        self.setObjectName("sourcesButton")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFlat(True)
+        self.setToolTip("Health of each search source")
+        self.clicked.connect(self.open_menu)
+        self.refresh()
+
+    def refresh(self) -> None:
+        table = {row["source"]: row for row in sources.status_table()}
+        text, tone = presentation.sources_button_text(table)
+        self.setText(text)
+        self.setStyleSheet(f"color: {presentation.tone_color(tone, _dark(), theme)}; font-size: 12px;")
+
+    def build_menu(self) -> QMenu:
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        title = menu.addAction("SOURCE STATUS — untick to stop using a source")
+        title.setEnabled(False)
+        for row in sources.status_table():
+            label, tone, tip = presentation.source_entry(row)
+            mark = {"good": "●", "warn": "●", "bad": "●"}.get(tone, "○")
+            action = menu.addAction(f"{mark}  {label}")
+            action.setCheckable(True)
+            action.setChecked(row.get("state") != sources.DISABLED)
+            action.setToolTip(tip or "No problems recorded")
+            action.toggled.connect(lambda on, name=row["source"]: (sources.set_enabled(name, on), self.refresh()))
+        return menu
+
+    def open_menu(self) -> None:
+        self.build_menu().exec(self.mapToGlobal(self.rect().bottomLeft()))
+
+
 class DiscSpinner(QLabel):
     """A small CD that spins while a search is running and hides itself otherwise."""
 
@@ -171,16 +274,11 @@ class DiscSpinner(QLabel):
                                Qt.TransformationMode.SmoothTransformation))
 
 
-def human_size(n: float) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
+human_size = presentation.human_size
 
 
 class DownloadRow(QWidget):
-    """One download: name, progress bar, then ``done of total · speed · ETA · peers``."""
+    """One download: name, what it is doing, progress bar, live figures, then the validation checklist."""
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -196,39 +294,64 @@ class DownloadRow(QWidget):
         self.entry: dict | None = None  # set while interrupted, awaiting restart
         self.state = QLabel("Starting…")
         self.state.setObjectName("statusLabel")
+        self.state.setWordWrap(True)
         self.speed = QLabel()
         self.speed.setObjectName("downloadSpeed")
         self.speed.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.stats = QLabel()
+        self.stats.setObjectName("statusLabel")
+        self.performance = QLabel()
+        self.performance.setObjectName("statusLabel")
+        self.checks = QLabel()
+        self.checks.setObjectName("statusLabel")
+        self.checks.setTextFormat(Qt.TextFormat.RichText)
+        self.checks.setWordWrap(True)
+        for label in (self.stats, self.performance, self.checks):
+            label.setVisible(False)
         info = QHBoxLayout()
         info.addWidget(self.state, 1)
         info.addWidget(self.speed)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
         layout.addWidget(self.title)
-        layout.addWidget(self.bar)
         layout.addLayout(info)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.stats)
+        layout.addWidget(self.performance)
+        layout.addWidget(self.checks)
 
     def show_message(self, message: str) -> None:
         self.state.setText(message)
+        self.state.setStyleSheet("")
         self.speed.clear()
 
     def update_from(self, download: downloads.Download) -> None:
         if download.name:
             self.title.setText(download.name)
+        dark = _dark()
         self.bar.setValue(round(download.progress * 1000))
         self.bar.setFormat(f"{download.progress * 100:.1f}%")
-        if download.state == "downloading" and download.size_total:
-            parts = [f"{download.progress * 100:.0f}%", f"{human_size(download.size_done)} of {human_size(download.size_total)}"]
-            if download.peers:
-                parts.append(f"{download.peers} peers")
-            if download.eta and download.speed:
-                parts.append(f"{download.eta} left")
-            self.state.setText(" · ".join(parts))
-            self.speed.setText(f"↓ {human_size(download.speed)}/s")
-        else:
-            self.state.setText(download.message or download.state.capitalize())
-            self.speed.setText(f"↓ {human_size(download.speed)}/s" if download.speed else "")
+        headline, tone = presentation.download_status(download)
+        self.state.setText(headline)
+        self.state.setStyleSheet(f"color: {presentation.tone_color(tone, dark, theme)};" if tone != "muted" else "")
+        self.speed.setText(f"↓ {human_size(download.speed)}/s" if download.speed and download.state == "downloading" else "")
+        stats = presentation.download_stats(download)
+        if stats:
+            stats = f"{download.progress * 100:.0f}% · {stats}"  # the slim bar carries no text
+        self.stats.setText(stats)
+        self.stats.setVisible(bool(stats))
+        perf, perf_tone = presentation.download_performance(download)
+        self.performance.setText(perf)
+        self.performance.setStyleSheet(f"color: {presentation.tone_color(perf_tone, dark, theme)};")
+        self.performance.setVisible(bool(perf))
+        checks = list(download.checks or [])
+        text = presentation.checks_html(checks, dark, theme)
+        if download.state == "rejected" and download.message:
+            text += f"<br><b>{download.message}</b>"
+        self.checks.setText(text)
+        self.checks.setVisible(bool(text))
+        self.bar.setVisible(download.state in ("queued", "downloading", "finished", "validating"))
 
 
 class DownloadList(QListWidget):
@@ -248,20 +371,32 @@ class DownloadPage(QWidget):
     """The whole Search & Download view."""
 
     changeFolderRequested = pyqtSignal()
+    mediaAdmitted = pyqtSignal(list)  # final paths of newly verified downloads
 
-    def __init__(self, client_dir=None, parent: QWidget | None = None, state_file=None) -> None:
+    def __init__(self, client_dir=None, parent: QWidget | None = None, state_file=None, db=None) -> None:
         super().__init__(parent)
         self.setObjectName("browser")
         self.internet_allowed = False
         self.selected_url: str | None = None
         self._request_id = 0
         self._worker: SearchWorker | None = None
+        self.db = db
+        self.history = History(db)
+        search.configure(self.history)  # search ranking and source health remember through the library database
+        if state_file:
+            sources.load_overrides(Path(state_file).parent / "sources.json")
+        self.pipeline = acquire.Pipeline(self.history, on_admitted=self._admitted)
         self.client = downloads.DownloadClient(
-            client_dir or downloads.DEFAULT_DIR, self._download_updated, state_file)
-        
+            client_dir or downloads.DEFAULT_DIR, self._download_updated, state_file, pipeline=self.pipeline)
+
         self._download_items: dict[int, tuple[QListWidgetItem | None, DownloadRow]] = {}
         self._titles: dict[str, str] = {}  # target url -> result title, for the download row
+        self._results: dict[str, SearchResult] = {}  # target url -> result, for ranking data at download time
+        self._confirm: str | None = None  # target the user was warned about; pressing D again downloads it
+        self._progress: dict[str, str] = {}
+        self._expected = 0
         self.updateReceived.connect(self._show_update)
+        self.admittedReceived.connect(self.mediaAdmitted)
 
         header = QHBoxLayout()
         title = QLabel("Search & Download")
@@ -300,13 +435,19 @@ class DownloadPage(QWidget):
         self.results.selectRequested.connect(self._select)
         self.results.downloadRequested.connect(self._download_result)
         self.results.set_placeholder("Search for movies and shows", "Allow internet access above to begin.")
+        self.results.currentItemChanged.connect(
+            lambda item, _old: self.detail.show_result(item.data(RESULT_ROLE) if item else None))
+        self.orb = ScrapingOrb(self.results.viewport(), dark=_dark())
+        self.detail = ResultDetail()
+        self.detail.setVisible(False)
         self.status = QLabel("Allow internet access to start searching.")
         self.status.setObjectName("hint")
         self.status.setWordWrap(True)
+        self.sources_button = SourcesButton()
         self.downloads_list = DownloadList()
         self.downloads_list.setObjectName("downloadList")
         self.downloads_list.setMinimumHeight(200)
-        self.downloads_list.setMaximumHeight(280)
+        self.downloads_list.setMaximumHeight(320)
         self.downloads_list.setVisible(False)
         self.downloads_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.downloads_list.setToolTip("Select a download and press C to cancel it and delete the partial file")
@@ -319,13 +460,18 @@ class DownloadPage(QWidget):
         layout.addSpacing(6)
         layout.addWidget(self.search_box)
         layout.addLayout(warning_row)
-        layout.addWidget(self.results, 1)
         self.spinner = DiscSpinner()
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
         status_row.addWidget(self.spinner)
         status_row.addWidget(self.status, 1)
+        status_row.addWidget(self.sources_button)
         layout.addLayout(status_row)
+        body = QHBoxLayout()
+        body.setSpacing(12)
+        body.addWidget(self.results, 1)
+        body.addWidget(self.detail)
+        layout.addLayout(body, 1)
         layout.addWidget(self.downloads_list)
         for entry in self.client.saved():
             row = self._add_row(entry.get("name") or entry["target"][:80], "Interrupted — resumes when internet access is allowed")[1]
@@ -352,8 +498,8 @@ class DownloadPage(QWidget):
         self.allow_button.setText("Internet Access Allowed")
         self.search_box.setEnabled(True)
         self.search_box.setFocus()
-        self.status.setText("Type a title and press Enter.")
         self.results.set_placeholder("Search for movies and shows", "Type a title and press Enter.")
+        self.status.setText("Type a title and press Enter.")
         self._resume_interrupted()
 
     def _resume_interrupted(self) -> None:
@@ -363,12 +509,14 @@ class DownloadPage(QWidget):
                 continue
             entry, row.entry = row.entry, None
             try:
-                download = self.client.start(entry["target"], entry.get("name", ""), entry.get("directory"), entry.get("files"))
+                download = self.client.start(
+                    entry["target"], entry.get("name", ""), entry.get("directory"), entry.get("files"),
+                    final_dir=entry.get("final_dir"), alternatives=entry.get("alternatives"), meta=entry.get("meta"))
             except downloads.DownloadError as error:
                 row.show_message(str(error))
                 continue
             self._bind_row(download, row)
-            row.show_message("Resuming…")
+            row.show_message("Resuming where it left off…")
 
     def focus_search(self) -> None:
         if self.search_box.isEnabled():
@@ -391,39 +539,64 @@ class DownloadPage(QWidget):
         if not self.internet_allowed or not query:
             return
         self._request_id += 1
+        self._progress, self._expected = {}, 0
         self.status.setText("Fetching results…")
         self.spinner.start()
+        self.results.clear()  # the old results make way for the orb until the new ones arrive
+        self.detail.show_result(None)
+        self.selected_url = None
+        self._confirm = None
+        if hasattr(self.results, "set_placeholder"):
+            self.results.set_placeholder("")
+        self.orb.set_style(_dark())
+        self.orb.start()
         worker = SearchWorker(self._request_id, query, self)
         worker.found.connect(self._on_found)
         worker.failed.connect(self._on_failed)
+        worker.progressed.connect(self._on_progress)
         worker.finished.connect(worker.deleteLater)
         self._worker = worker
         worker.start()
+
+    def _on_progress(self, request_id: int, event: dict) -> None:
+        if request_id != self._request_id:
+            return
+        if event["kind"] == "start":
+            self._expected = len(event["sources"])
+        elif event["kind"] == "source":
+            self._progress[event["source"]] = event["status"]
+        self.status.setText(presentation.progress_line(self._expected, self._progress))
 
     def _on_found(self, request_id: int, found: list[SearchResult]) -> None:
         if request_id != self._request_id:
             return  # a newer search superseded this one
         self.spinner.stop()
+        self.orb.stop()
+        self.results.set_placeholder("No results", "Try a different title or fewer words.")
         self.set_results(found)
+        self.sources_button.refresh()
         summary = f" ({search.last_summary})" if search.last_summary else ""
         self.status.setText(f"{len(found)} result(s).{summary}" if found else f"No results.{summary}")
-        self.results.set_placeholder("No results", "Try a different title or fewer words.")
         if found:
             self.results.setFocus()
 
     def _on_failed(self, request_id: int, message: str) -> None:
         if request_id == self._request_id:
             self.spinner.stop()
+            self.orb.stop()
+            self.sources_button.refresh()
             self.status.setText(message)
 
     def set_results(self, found: list[SearchResult]) -> None:
         self.results.clear()
         self.selected_url = None
         for result in found:
-            self._titles[result.target_url] = result.title
+            self._titles[result.target_url] = result.candidate.display_title if result.candidate else result.title
+            self._results[result.target_url] = result
             item = QListWidgetItem()
             item.setData(RESULT_ROLE, result)
             self.results.addItem(item)
+        self.detail.setVisible(bool(found))
         if found:
             self.results.setCurrentRow(0)
 
@@ -431,6 +604,7 @@ class DownloadPage(QWidget):
 
     def _select(self, result: SearchResult) -> None:
         self.selected_url = result.target_url
+        self.detail.show_result(result)
         self.status.setText(f"Selected: {result.title} — press D to download.")
 
     def _download_result(self, result: SearchResult) -> None:
@@ -440,16 +614,29 @@ class DownloadPage(QWidget):
     # ------------------------------------------------------------ downloads
 
     def start_download(self, target_url: str) -> None:
-        """Hand *target_url* (magnet link or .torrent) to the background client."""
+        """Hand *target_url* (magnet link or .torrent) to the background client, unless it would be a duplicate."""
+        result = self._results.get(target_url)
+        candidate = result.candidate if result else None
+        reason, hard = acquire.duplicate_reason(
+            self.client, self.history, self.db, target_url, candidate.release if candidate else None,
+            candidate.info_hash if candidate else sources.info_hash(target_url))
+        if reason and (hard or self._confirm != target_url):
+            self._confirm = None if hard else target_url
+            self.status.setText(reason if hard else f"{reason} Press D again to download it anyway.")
+            return
+        self._confirm = None
+        meta = {**candidate.meta(), "release_key": acquire.release_key(candidate.release)} if candidate else {}
         try:
-            download = self.client.start(target_url)
+            download = self.client.start(
+                target_url, directory=downloads.incoming_dir(self.client.directory), final_dir=self.client.directory,
+                alternatives=candidate.alternatives if candidate else None, meta=meta)
         except downloads.DownloadError as error:
             self.status.setText(str(error))
             return
         title = self._titles.get(target_url) or target_url[:80]
         download.name = download.name or title
         self._bind_row(download, self._add_row(title)[1])
-        self.status.setText("Download started in the background.")
+        self.status.setText("Download started in the background. Its file list is checked before anything is fetched.")
 
     def _add_row(self, title: str, message: str = "") -> tuple[QListWidgetItem, DownloadRow]:
         row = DownloadRow(title)
@@ -468,14 +655,22 @@ class DownloadPage(QWidget):
         self._download_items[id(download)] = (None, row)
 
     updateReceived = pyqtSignal(object)
+    admittedReceived = pyqtSignal(list)
 
     def _download_updated(self, download: downloads.Download) -> None:  # worker thread
         self.updateReceived.emit(download)
 
+    def _admitted(self, paths: list[str]) -> None:  # worker thread
+        self.admittedReceived.emit(list(paths))
+
+    def _item_of(self, row: DownloadRow) -> QListWidgetItem | None:
+        return next((self.downloads_list.item(i) for i in range(self.downloads_list.count())
+                     if self.downloads_list.itemWidget(self.downloads_list.item(i)) is row), None)
+
     def _cancel_item(self, item: QListWidgetItem) -> None:
         row = self.downloads_list.itemWidget(item)
         if row.download is not None:
-            if row.download.state == "finished":
+            if row.download.state in ("finished", "verified", "rejected"):
                 self.status.setText("That download already finished.")
                 return
             row.show_message("Cancelling…")
@@ -494,14 +689,19 @@ class DownloadPage(QWidget):
             else self._download_items.get(id(download))
         if entry is None:
             return
+        item = self._item_of(entry[1])
         if download.discard and download.state == "cancelled":
-            item = next((self.downloads_list.item(i) for i in range(self.downloads_list.count())
-                         if self.downloads_list.itemWidget(self.downloads_list.item(i)) is entry[1]), None)
             if item is not None:
                 self._remove_item(item)
             self.status.setText(f"Cancelled “{download.name or 'download'}” and deleted the partial download.")
-        else:
-            entry[1].update_from(download)
+            return
+        entry[1].update_from(download)
+        if item is not None:
+            item.setSizeHint(entry[1].sizeHint())
+        if download.state == "verified":
+            self.status.setText(f"“{download.name}” passed validation and was added to {download.final_dir or download.directory}.")
+        elif download.state == "rejected":
+            self.status.setText(f"“{download.name}” failed validation and was NOT added to the Library.")
 
     def shutdown(self) -> None:
         self.client.cancel_all()

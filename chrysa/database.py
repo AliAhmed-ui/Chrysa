@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -81,12 +81,50 @@ CREATE TABLE IF NOT EXISTS playback (
 );
 CREATE INDEX IF NOT EXISTS playback_recent ON playback(last_watched DESC);
 
--- Opening titles found by comparing episode audio (see intro.py). No start/end = looked, found none.
-CREATE TABLE IF NOT EXISTS intros (
-    media_id      INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
-    start_seconds REAL,
-    end_seconds   REAL,
-    size          INTEGER NOT NULL DEFAULT 0   -- file size when analysed; a different file is analysed again
+-- Opening titles (see intro.py). Compact audio features of every analysed episode, so it is decoded only once.
+CREATE TABLE IF NOT EXISTS intro_features (
+    media_id         INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    size             INTEGER NOT NULL,         -- file size when analysed; a different file is analysed again
+    analysis_version INTEGER NOT NULL,
+    duration         REAL NOT NULL,
+    sample_rate      INTEGER NOT NULL,
+    frames           INTEGER NOT NULL,
+    data             BLOB NOT NULL,            -- zlib-compressed int8 frames x bands
+    created_at       REAL NOT NULL
+);
+
+-- A recurring opening of a season (a "variant"), with the template later episodes are matched against.
+CREATE TABLE IF NOT EXISTS season_intro_profiles (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    show_id          INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+    season           INTEGER NOT NULL,
+    variant          INTEGER NOT NULL,
+    fingerprint      BLOB NOT NULL,            -- zlib-compressed int8 frames x bands
+    frames           INTEGER NOT NULL,
+    confidence       REAL NOT NULL,
+    quality          REAL NOT NULL,            -- confidence without the recurrence part
+    occurrence_count INTEGER NOT NULL,         -- episodes found to contain it
+    episode_count    INTEGER NOT NULL,         -- episodes analysed
+    canonical_duration REAL NOT NULL,
+    analysis_version INTEGER NOT NULL,
+    created_at       REAL NOT NULL,
+    updated_at       REAL NOT NULL,
+    UNIQUE (show_id, season, variant)
+);
+
+-- What was concluded for each episode. Only present rows above the confidence threshold ever show a button.
+CREATE TABLE IF NOT EXISTS episode_intros (
+    media_id         INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    profile_id       INTEGER REFERENCES season_intro_profiles(id) ON DELETE SET NULL,
+    size             INTEGER NOT NULL,
+    analysis_version INTEGER NOT NULL,
+    present          INTEGER NOT NULL,
+    status           TEXT NOT NULL,            -- found | absent | unreadable
+    start_seconds    REAL,
+    end_seconds      REAL,
+    confidence       REAL NOT NULL DEFAULT 0,
+    similarity       REAL NOT NULL DEFAULT 0,
+    detected_at      REAL NOT NULL
 );
 
 -- Plot, rating and artwork fetched online (see metadata.py). A row means "looked up";
@@ -113,6 +151,47 @@ CREATE TABLE IF NOT EXISTS media_details (
     backdrop_path TEXT,
     fetched_at    REAL NOT NULL
 );
+
+-- How each Browse source behaved lately (see sources.py). One row per source, updated after every search.
+CREATE TABLE IF NOT EXISTS source_health (
+    source               TEXT PRIMARY KEY,
+    state                TEXT NOT NULL,           -- healthy | degraded | changed | offline | disabled
+    last_status          TEXT,                    -- ok, or the failure kind (offline, changed, timeout...)
+    last_error           TEXT,
+    last_checked         REAL,
+    last_success         REAL,
+    last_failure         REAL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_result_count    INTEGER NOT NULL DEFAULT 0,
+    avg_result_count     REAL NOT NULL DEFAULT 0,  -- moving average over answered searches
+    parse_rate           REAL NOT NULL DEFAULT 1,  -- share of rows that passed the result contract
+    response_ms          INTEGER NOT NULL DEFAULT 0,
+    schema_version       INTEGER NOT NULL DEFAULT 0,
+    disabled             INTEGER NOT NULL DEFAULT 0
+);
+
+-- One row per download Browse started (see acquire.py); the ranking learns from it.
+CREATE TABLE IF NOT EXISTS download_history (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    info_hash        TEXT,
+    source           TEXT,
+    title            TEXT,
+    size             INTEGER,
+    resolution       TEXT,
+    release_group    TEXT,
+    started_at       REAL NOT NULL,
+    completed_at     REAL,
+    status           TEXT NOT NULL,   -- running | verified | rejected | stalled | failed | cancelled
+    avg_speed        REAL,            -- bytes/s from first data to the end
+    peak_speed       REAL,
+    ttfd             REAL,            -- seconds until the first byte arrived
+    initial_seeders  INTEGER,
+    initial_leechers INTEGER,
+    avg_peers        REAL,
+    detail           TEXT
+);
+CREATE INDEX IF NOT EXISTS download_history_hash ON download_history(info_hash);
+CREATE INDEX IF NOT EXISTS download_history_source ON download_history(source, status);
 
 -- Memoised guessit results (parsing a name costs several milliseconds).
 CREATE TABLE IF NOT EXISTS name_cache (
@@ -180,6 +259,8 @@ class Database:
                 if version == 3:  # the first draft of these two tables named a column differently; nothing was kept in them
                     tx.execute("DROP TABLE IF EXISTS show_details")
                     tx.execute("DROP TABLE IF EXISTS media_details")
+                if version < 6:
+                    tx.execute("DROP TABLE IF EXISTS intros")  # replaced by the season-aware tables below
                 for statement in _statements(_SCHEMA):
                     tx.execute(statement)
                 tx.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
