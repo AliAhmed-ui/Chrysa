@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -75,12 +76,25 @@ def is_git_checkout(root: Path = APP_ROOT) -> bool:
     return (root / ".git").exists()
 
 
+def find_git() -> str:
+    """``git`` from PATH, else the usual Git for Windows folders (a shortcut can start Chrysa without them on PATH)."""
+    found = shutil.which("git")
+    if found:
+        return found
+    for variable, tail in (("ProgramFiles", r"Git\cmd\git.exe"), ("ProgramFiles(x86)", r"Git\cmd\git.exe"),
+                           ("LocalAppData", r"Programs\Git\cmd\git.exe")):
+        base = os.environ.get(variable)
+        if base and (candidate := Path(base) / tail).is_file():
+            return str(candidate)
+    raise FileNotFoundError("git")
+
+
 def run_git(root: Path, *args: str, timeout: float = 60.0, should_stop: StopFn = lambda: False):
     """Run ``git -C root args`` without prompts or console windows; stops early when asked to."""
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     process = subprocess.Popen(
-        ["git", "-C", str(root), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [find_git(), "-C", str(root), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         env=env, creationflags=flags,
     )
     waited = 0.0
@@ -119,7 +133,12 @@ def check_for_update(
         if is_git_checkout(root):
             return _update_checkout(apply, root, should_stop, git, current_version)
         return _check_copy(fetch_text, current_version)
-    except FileNotFoundError:  # git is not installed: treat the folder like a plain download
+    except FileNotFoundError:  # git is not installed
+        if is_git_checkout(root):  # a version compare cannot see commits, so never claim "up to date"
+            return UpdateResult(
+                FAILED, "Could not find git, so Chrysa cannot check for updates. Install Git for Windows "
+                "(or add git to PATH) and restart Chrysa.", current_version,
+            )
         try:
             return _check_copy(fetch_text, current_version)
         except Exception as error:

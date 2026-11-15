@@ -164,10 +164,25 @@ class ThumbnailService(QObject):
         self._workers.stop()
 
 
+class _SignalHandler(logging.Handler):
+    """Forwards log records (as level, message) to *emit*, a Qt signal that is safe to fire from any thread."""
+
+    def __init__(self, emit) -> None:
+        super().__init__(logging.INFO)
+        self._emit = emit
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._emit(record.levelname if record.levelno < logging.ERROR else "WARN", record.getMessage())
+        except Exception:
+            pass
+
+
 class IntroWorker(QThread):
     """Looks for opening titles season by season, off the UI thread, and caches what it finds."""
 
     introFound = pyqtSignal(int)  # media id
+    logLine = pyqtSignal(str, str)  # level, message: the [INTRO] lines, for the Activity log
 
     def __init__(self, library: Library, resume: threading.Event, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -175,6 +190,8 @@ class IntroWorker(QThread):
         self._resume = resume  # cleared while a video plays so ffmpeg does not compete with it
 
     def run(self) -> None:
+        handler = _SignalHandler(self.logLine.emit)
+        log.addHandler(handler)
         try:
             for job in self._library.intro_jobs():
                 if self.isInterruptionRequested():
@@ -186,6 +203,7 @@ class IntroWorker(QThread):
         except Exception:
             log.exception("[INTRO] intro analysis failed")
         finally:
+            log.removeHandler(handler)
             self._library.db.close()
 
     def _should_stop(self) -> bool:
@@ -201,6 +219,7 @@ class IntroService(QObject):
     """Runs one :class:`IntroWorker` at a time; asking again while it runs queues one more pass."""
 
     introFound = pyqtSignal(int)
+    logLine = pyqtSignal(str, str)
 
     def __init__(self, library: Library, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -219,6 +238,7 @@ class IntroService(QObject):
             return
         worker = self._worker = IntroWorker(self._library, self._resume, self)
         worker.introFound.connect(self.introFound)
+        worker.logLine.connect(self.logLine)
         worker.finished.connect(self._done)
         worker.start()
 

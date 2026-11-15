@@ -57,7 +57,7 @@ BANDS = 32
 FLOOR = 1e-3  # relative energy floor (-30 dB re the frame average)
 LOCAL_FRAMES = 51  # the surrounding ~10 s is subtracted: what music of any kind shares with the speech around it goes
 QSCALE = 12.0  # features are stored as int8 at 1/12 of a log unit
-ALGORITHM = 3  # bump when detection changes: cached features and results are then recomputed
+ALGORITHM = 4  # bump when detection changes: cached features and results are then recomputed
 MAX_AUDIO_SECONDS = 4 * 3600
 
 # --- matching ---------------------------------------------------------------
@@ -782,10 +782,12 @@ def analyse_season(job, store, should_stop: Callable[[], bool] = lambda: False, 
             return features[media.id]
         found = store.intro_features(media)
         if found is None:
+            log.info("[INTRO] %s episode %s: listening to the audio…", tag, media.episode or f"#{media.id}")
             found = extract_features(media.path, should_stop)
             if found is None:
                 if not should_stop():
                     unreadable.add(media.id)
+                    log.warning("[INTRO] %s episode %s: the audio could not be read", tag, media.episode or f"#{media.id}")
                 return None
             store.save_intro_features(media, found)
         features[media.id] = found

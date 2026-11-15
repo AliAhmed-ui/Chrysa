@@ -356,6 +356,7 @@ class MainWindow(QMainWindow):
         self.player = PlayerPage(library)
         self.player.closed.connect(self._player_closed)
         self.intros.introFound.connect(self.player.refresh_intro)
+        self.intros.logLine.connect(self.sidebar.activity.log)
         self.root = QStackedWidget()
         self.root.addWidget(self.browser)
         self.root.addWidget(self.player)
