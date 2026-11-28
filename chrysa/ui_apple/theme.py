@@ -328,6 +328,12 @@ QComboBox QAbstractItemView::item {{ padding: 6px 12px; min-height: 22px; border
 QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
     background: {ACCENT}; color: {ON_ACCENT};
 }}
+QListView#suggestions {{
+    background: {SURFACE_RAISED}; border: 1px solid {SEPARATOR}; border-radius: {RADIUS_S}px; outline: none;
+    padding: 4px; font-size: {px['callout']}px;
+}}
+QListView#suggestions::item {{ padding: 7px 12px; border-radius: {RADIUS_S - 1}px; color: {TEXT}; }}
+QListView#suggestions::item:hover, QListView#suggestions::item:selected {{ background: {ACCENT}; color: {ON_ACCENT}; }}
 QMenu {{ background: {SURFACE_RAISED}; border: 1px solid {SEPARATOR}; border-radius: {RADIUS_M}px; padding: 5px; }}
 QMenu::item {{ padding: 5px 26px 5px 22px; border-radius: {RADIUS_S - 1}px; font-size: {px['callout']}px; color: {TEXT}; }}
 QMenu::item:selected {{ background: {ACCENT}; color: {ON_ACCENT}; }}

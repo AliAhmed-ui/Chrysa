@@ -360,7 +360,8 @@ class MainWindow(QMainWindow):
         self.root = QStackedWidget()
         self.root.addWidget(self.browser)
         self.root.addWidget(self.player)
-        self.download_page = DownloadPage(state_file=library.paths.data_dir / "downloads.json", db=library.db)
+        self.download_page = DownloadPage(state_file=library.paths.data_dir / "downloads.json", db=library.db,
+                                         settings=library)
         saved_dir = self.library.setting(DOWNLOAD_DIR_SETTING)
         if saved_dir:
             self.download_page.set_download_dir(saved_dir)

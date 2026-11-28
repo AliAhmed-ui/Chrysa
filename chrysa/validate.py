@@ -251,8 +251,12 @@ def payload_files(root: Path, names: list[str]) -> list[Path]:
 
 def validate(root: Path, names: list[str], expect_video: bool = True, malware_scan: bool = True,
              should_stop: Callable[[], bool] | None = None,
-             step: Callable[[Report], None] | None = None) -> Report:
-    """Run every check over the download *names* inside *root*. *step* is told after each check (for the UI)."""
+             step: Callable[[Report], None] | None = None, *, min_seconds: float = MIN_SECONDS,
+             extra_ext: frozenset | set = frozenset()) -> Report:
+    """Run every check over the download *names* inside *root*. *step* is told after each check (for the UI).
+
+    A pasted link is something the user chose, not a torrent that may be a fake: it passes ``min_seconds=0`` (a short
+    clip is fine) and ``extra_ext`` (audio extensions to keep). Every other check still applies."""
     report = Report()
     stop = should_stop or (lambda: False)
     tell = step or (lambda r: None)
@@ -266,7 +270,7 @@ def validate(root: Path, names: list[str], expect_video: bool = True, malware_sc
             removed.append(path.name)
             continue
         suffix = path.suffix.lower()
-        if suffix not in VIDEO_EXT | HARMLESS_EXT:
+        if suffix not in VIDEO_EXT | HARMLESS_EXT | set(extra_ext):
             try:
                 path.unlink()
                 removed.append(path.name)
@@ -326,7 +330,7 @@ def validate(root: Path, names: list[str], expect_video: bool = True, malware_sc
             duration = 0.0
         if duration <= 0:
             return report.fail("Duration", f"{main.name} has no readable duration")
-        if duration < MIN_SECONDS:
+        if duration < min_seconds:
             return report.fail("Duration", f"only {duration:.0f} s long: a sample or a fake, not the full video")
         report.add(PASS, "Duration", _clock(duration))
         if width and height:

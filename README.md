@@ -20,7 +20,7 @@ same path and start in a fraction of a second.
 Browsing, playing, resuming, searching and scanning your library never touch the network.
 Chrysa goes online only:
 
-1. **In Browse** (search and download), and only after you press *Allow Internet Access*.
+1. **In Browse** (search, or Paste Link), and only after you press *Allow Internet Access*.
 2. **When you press *Fetch Subtitles*** (subtitles are searched online and saved next to the video).
 3. **When you press *Fetch Details*** (plots, ratings and artwork from TVMaze and Wikipedia;
    only titles are sent).
@@ -88,6 +88,21 @@ Nothing else is sent anywhere, and there are no accounts, API keys or analytics.
     alone: `python3 bd.py "query"`). A slow or broken site never blocks or hides the others. The line under
     the search box counts sources as they answer, then summarises: results, unique releases, high-quality
     matches, hidden unrelated/suspicious ones. Answers are cached for a few minutes.
+  - **Paste Link.** The *Search | Paste Link* switch next to the title. Paste a video, audio or other
+    supported media link and press Download; the file goes through the same quarantine, checks and
+    download folder as a search result. The engine is the **local yt-dlp checkout** (`../yt-dlp` next to the
+    Chrysa folder, or `CHRYSA_YTDLP_DIR`), imported by `chrysa/ytdlp.py`; no global `yt-dlp`, pip copy or
+    online service is used, and the link is passed through yt-dlp's Python API, never through a shell.
+    If an attempt fails, `chrysa/linkdl.py` reads *why* and makes at most three deliberate retries: a patient
+    retry for flaky connections, IPv4 (or IPv6) when the error is an address-family problem, the proxy you
+    entered, your browser's sign-in (read locally by yt-dlp, never copied or shown) when a login is needed,
+    browser impersonation (`curl_cffi`) when a site rejects plain clients, a relaxed format, or the installed
+    JavaScript runtime for YouTube. It never uses a proxy you did not give it, never repeats a
+    configuration, and says plainly when a proxy, a signed-in browser, or an engine update is what is missing.
+    *Download details* on a failed row shows the attempt log. Proxy (`http`, `https`, `socks4/4a/5/5h`)
+    and browser choice are offered on the failed row and remembered in Chrysa's settings
+    (`link.proxy`, `link.cookies_browser`); a proxy in the usual `HTTP_PROXY`/`HTTPS_PROXY` variables is
+    honoured by yt-dlp itself. A playlist or channel link downloads its first video only.
   - **Understanding and ranking.** The query is matched to the title you meant and to what you are after
     (movie, episode, season, documentary; mixed results when unsure). Release names are read for resolution,
     source (WEB-DL, BluRay…), codecs, audio, HDR and release group; nothing that is not written there is
@@ -196,7 +211,8 @@ window). `run.sh` installs these when they are missing and asks for `sudo` only 
 | Python | `python3-venv` `python3-pip` | `python3` `python3-pip` | `python` `python-pip` |
 | Qt platform plugin | `libxcb-cursor0` | `xcb-util-cursor` | `xcb-util-cursor` |
 
-Python packages (installed into `.venv`): PyQt6, python-vlc, guessit.
+Python packages (installed into `.venv`): PyQt6, python-vlc, guessit, and `curl_cffi` (Paste Link's browser
+impersonation). Paste Link also needs the yt-dlp checkout next to the Chrysa folder (see Browse).
 
 `run.sh` options: `--setup-only` (prepare everything, do not start),
 `--skip-system-deps` (never touch system packages), and any Chrysa option below.
@@ -260,6 +276,8 @@ chrysa/
   bd.py          torrent sites (fetch/parse)   sources.py     source adapters, contract, health
   ranking.py     release tags, safety, scores  validate.py    file checks before the Library
   acquire.py     quarantine → Library glue     history.py     source health + download history
+  linkdl.py      Paste Link: failure diagnosis, ytdlp.py  loads the local yt-dlp checkout
+                 recovery planner, runner
   config.py      paths and thresholds          naming.py      guessit glue and sanity checks
   scanner.py     folder walk + classification  probe.py       ffprobe
   database.py    SQLite schema, connections    library.py     sync, queries, resume logic

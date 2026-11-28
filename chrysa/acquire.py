@@ -16,7 +16,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from . import releases, validate
+from . import linkdl, releases, validate
 from .downloads import Download, remove_partial_files
 from .history import History
 
@@ -54,8 +54,12 @@ class Pipeline:
         """Validate a finished download, then admit it to the library folder or delete it."""
         root = download.directory
         emit(download, state="validating", message="Checking contents…", checks=[], speed=0, eta="")
+        link = download.kind == "link"
+        audio_only = link and all(Path(n).suffix.lower() in linkdl.AUDIO_EXTENSIONS for n in download.files)
         report = validate.validate(
-            root, download.files, malware_scan=self.malware_scan, should_stop=download._stop.is_set,
+            root, download.files, expect_video=not audio_only, malware_scan=self.malware_scan,
+            should_stop=download._stop.is_set,
+            min_seconds=0 if link else validate.MIN_SECONDS, extra_ext=linkdl.AUDIO_EXTENSIONS if link else frozenset(),
             step=lambda r: emit(download, checks=list(r.checks),
                                 message="Scanning for malware…" if r.phase == "scanning" else "Checking contents…"),
         )
@@ -77,7 +81,7 @@ class Pipeline:
         log.info("[LIBRARY] media admitted: %s", ", ".join(admitted))
         label = "Verified media" if report.verdict == validate.VERIFIED else "Container checked (ffprobe unavailable)"
         emit(download, state="verified", checks=report.checks, admitted=admitted,
-             message=f"{label} — added to {final}")
+             message=f"Added to {final}" if download.kind == "link" else f"{label} — added to {final}")
         self.on_admitted(admitted)
 
 

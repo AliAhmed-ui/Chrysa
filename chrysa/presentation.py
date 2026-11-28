@@ -7,6 +7,7 @@ out rather than guessed.
 from __future__ import annotations
 
 import html
+from pathlib import Path
 
 from . import sources
 from .ranking import Candidate
@@ -195,6 +196,11 @@ def performance_label(bps: float) -> tuple[str, str]:
 def download_status(d) -> tuple[str, str]:
     """``(headline, tone)``: what the download is doing right now."""
     state = d.state
+    if getattr(d, "kind", "") == "link":
+        if state in ("queued", "downloading"):
+            return (d.message, INFO if d.health == "recovering" else MUTED) if d.message else ("Downloading", INFO)
+        if state in ("finished", "verified"):
+            return "Download complete", GOOD
     if state == "downloading":
         if d.message and (d.health in ("stalled", "connecting") or not d.size_total):
             return d.message, HEALTH_LABEL.get(d.health, ("", MUTED))[1]
@@ -214,6 +220,8 @@ def download_status(d) -> tuple[str, str]:
 
 def download_stats(d) -> str:
     """``8.4 MB/s · ETA 06:42 · 3.3 / 4.2 GB · 17 peers • 21 seeds``."""
+    if getattr(d, "kind", "") == "link" and d.state == "verified":
+        return ", ".join(Path(p).name for p in d.admitted[:2])
     if d.state != "downloading" or not d.size_total:
         return ""
     parts = []

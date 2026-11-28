@@ -27,7 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from . import torrentguard
+from . import geoproxy, linkdl, torrentguard
 from .sources import info_hash as info_hash_of
 
 log = logging.getLogger(__name__)
@@ -226,6 +226,9 @@ class Download:
     alternatives: list[str] = field(default_factory=list)  # equivalent releases to fall back to
     switches: int = 0
     meta: dict = field(default_factory=dict)  # what the search knew (source, size, seeders...), for the history
+    kind: str = "torrent"  # "torrent" (magnet / .torrent) or "link" (a web link fetched by yt-dlp, see linkdl.py)
+    attempts: list = field(default_factory=list)  # linkdl.Attempt rows: how a link download was tried
+    action: str = ""  # what could still help a failed link download: retry | proxy | cookies
     checks: list = field(default_factory=list)  # validate.Check rows while validating
     admitted: list[str] = field(default_factory=list)  # final paths of verified files
     monitor: Monitor | None = field(default=None, repr=False)
@@ -270,6 +273,7 @@ class DownloadClient:
         self, directory: Path = DEFAULT_DIR, on_update: Callable[[Download], None] | None = None,
         state_file: Path | None = None, pipeline=None,
     ) -> None:
+        self.link_settings: Callable[[], tuple[str, str]] = lambda: ("", "")  # (proxy URL, cookie browser)
         self.directory = Path(directory)
         self.state_file = Path(state_file) if state_file else None
         self.on_update = on_update or (lambda _download: None)
@@ -319,6 +323,28 @@ class DownloadClient:
         download._thread.start()
         return download
 
+    def start_link(self, url: str, name: str = "", directory: Path | None = None, *, final_dir: Path | None = None,
+                   meta: dict | None = None) -> Download:
+        """Download a web link with the local yt-dlp (see :mod:`chrysa.linkdl`). *url* must already be normalized."""
+        running = self.find_active(url)
+        if running is not None:
+            raise DownloadError(f"Already downloading this link (“{running.name or 'download'}”).")
+        folder = Path(directory) if directory else self.directory
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise DownloadError(f"Cannot use download folder {folder}: {error.strerror or error}") from error
+        download = Download(url, name=name or url, kind="link", directory=folder,
+                            final_dir=Path(final_dir) if final_dir else None, meta=dict(meta or {}))
+        with self._lock:
+            self.downloads.append(download)
+        if self.pipeline is not None:
+            self.pipeline.started(download)
+        download._thread = threading.Thread(target=self._guard, args=(self._run_link, download),
+                                            name="chrysa-link", daemon=True)
+        download._thread.start()
+        return download
+
     def saved(self) -> list[dict]:
         """Downloads left unfinished by an earlier run: ``{"target", "name", "directory", "files", ...}``."""
         return list(self.pending)
@@ -360,6 +386,7 @@ class DownloadClient:
         """Stop every download cleanly (aria2 writes its resume data) but keep them for the next launch."""
         with self._lock:
             active = list(self.downloads)
+        geoproxy.stop_all()  # a private Tor route Paste Link may have started
         for download in active:
             download._stop.set()
             process = download._process
@@ -383,7 +410,7 @@ class DownloadClient:
                  "files": d.files, "final_dir": str(d.final_dir) if d.final_dir else None,
                  "alternatives": d.alternatives, "meta": {k: v for k, v in d.meta.items() if k != "history_id"}}
                 for d in self.downloads
-                if d.state not in ("finished", "failed", "verified", "rejected") and not d.discard
+                if d.state not in ("finished", "failed", "verified", "rejected") and not d.discard and d.kind == "torrent"
             ]
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -593,6 +620,32 @@ class DownloadClient:
             reason = _ARIA2_EXIT.get(code, f"aria2c exited with status {code}")
             detail = next((t for t in reversed(tail) if re.search(r"ERR|error|exception|fail", t, re.I)), "")
             raise DownloadError(f"{reason} ({detail[:100]})" if detail else reason)
+
+    def _run_link(self, download: Download) -> None:
+        proxy, browser = self.link_settings()
+        env = linkdl.Environment.detect(proxy=proxy, cookies_browser=browser)
+        self._emit(download, state="downloading", message="Preparing…", health="connecting")
+        result = linkdl.run(download.target, download.directory or self.directory, env,
+                            lambda **changes: self._emit(download, **changes), download._stop)
+        download.attempts = result.attempts
+        download.files = [Path(p).name for p in result.paths if Path(p).parent == (download.directory or self.directory)]
+        if download._stop.is_set() and not download.discard:
+            download.files = []  # closing the app keeps the partial file; yt-dlp resumes it next time
+        if result.ok:
+            self._emit(download, state="finished", progress=1.0, speed=0, eta="", health="", files=list(result.names),
+                       name=result.title or download.name, message=f"Saved to {download.directory or self.directory}")
+            return
+        outcome = result.outcome
+        remove_partial_files(download.directory or self.directory, download.files, download.target)
+        if download._stop.is_set():
+            if not download.discard:  # app closing: the partial file is left for yt-dlp to resume
+                self._emit(download, state="cancelled", speed=0, eta="", message="Stopped")
+            return
+        download.files = []
+        if self.pipeline is not None:
+            self.pipeline.ended(download, "failed", detail=outcome.kind)
+        self._emit(download, state="failed", speed=0, eta="", health="", action=outcome.action,
+                   message=outcome.message())
 
     def _run_libtorrent(self, download: Download) -> None:
         import libtorrent as lt

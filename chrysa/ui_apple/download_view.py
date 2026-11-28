@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import html
+import shutil
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PyQt6.QtCore import QEvent, QTimer, QModelIndex, QObject, QRect, QRectF, QSize, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QKeyEvent, QPainter, QTransform
+from PyQt6.QtGui import QColor, QFont, QKeyEvent, QPainter, QStandardItem, QStandardItemModel, QTransform
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QCompleter,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -16,6 +21,8 @@ from PyQt6.QtWidgets import (
     QMenu,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
+    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -24,14 +31,19 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .. import acquire, downloads, presentation, search, sources
+from .. import acquire, downloads, linkdl, presentation, search, sources, suggest
 from ..history import History
 from ..orb import ScrapingOrb
 from ..search import SearchError, SearchResult
 from . import icons, theme
+from .toggle import SegmentedControl
 
 RESULT_ROLE = Qt.ItemDataRole.UserRole
 WARNING_TEXT = "Warning: Searching here will enable the app to access the internet."
+PROXY_SETTING = "link.proxy"  # a proxy the user entered for Paste Link
+BROWSER_SETTING = "link.cookies_browser"  # the browser whose sign-in yt-dlp may use for Paste Link
+TITLE_ROLE = Qt.ItemDataRole.UserRole + 1  # what a suggestion puts in the search box
+SUGGEST_DELAY_MS = 30  # ask almost every keystroke: early answers for the prefix show while IMDb works on the rest
 
 
 def _dark() -> bool:
@@ -42,14 +54,20 @@ class SearchWorker(QThread):
     found = pyqtSignal(int, object)  # request id, list[SearchResult]
     failed = pyqtSignal(int, str)
     progressed = pyqtSignal(int, object)  # request id, progress event dict
+    corrected = pyqtSignal(int, str, str)  # request id, what was typed, what is searched instead
 
-    def __init__(self, request_id: int, query: str, parent: QObject | None = None) -> None:
+    def __init__(self, request_id: int, query: str, parent: QObject | None = None, correct: bool = True) -> None:
         super().__init__(parent)
         self.request_id = request_id
         self.query = query
+        self.correct = correct
 
     def run(self) -> None:
         try:
+            fixed = suggest.corrected(self.query) if self.correct else None
+            if fixed:  # a misspelt title ("brking abd") is searched as the real one
+                self.corrected.emit(self.request_id, self.query, fixed)
+                self.query = fixed
             found = search.search(self.query, progress=lambda event: self.progressed.emit(self.request_id, event))
             self.found.emit(self.request_id, found)
         except SearchError as error:
@@ -277,19 +295,137 @@ class DiscSpinner(QLabel):
 human_size = presentation.human_size
 
 
+class ElidedLabel(QLabel):
+    """A one-line label that shortens its text with “…” instead of widening the window; ``text()`` is the full text."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None,
+                 mode: Qt.TextElideMode = Qt.TextElideMode.ElideRight) -> None:
+        super().__init__(parent)
+        self._full = ""
+        self._mode = mode
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setText(text)
+
+    def text(self) -> str:
+        return self._full
+
+    def setText(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        super().setText(self.fontMetrics().elidedText(self._full, self._mode, max(self.width(), 40)))
+
+
+class PasteLinkPanel(QWidget):
+    """Paste Link: one field and a Download button. ``submitted(text)`` fires on Enter or a click."""
+
+    submitted = pyqtSignal(str)
+
+    HINT = "Paste a video, audio, or supported media link."
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.link_box = QLineEdit()
+        self.link_box.setObjectName("searchBox")
+        self.link_box.setProperty("large", True)  # same field as Search
+        self.link_box.setMinimumHeight(52)
+        self.link_box.setPlaceholderText("Paste a video link…")
+        self.link_box.setAccessibleName("Video link")
+        self.link_box.returnPressed.connect(self._submit)
+        self.link_box.textChanged.connect(self._typed)
+        self.button = QPushButton("Download")
+        self.button.setObjectName("primary")
+        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.button.setMinimumHeight(52)
+        self.button.setAccessibleName("Download link")
+        self.button.clicked.connect(self._submit)
+        self.status = QLabel(self.HINT)
+        self.status.setObjectName("hint")
+        self.status.setWordWrap(True)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(self.link_box, 1)
+        row.addWidget(self.button)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        layout.addLayout(row)
+        layout.addWidget(self.status)
+        layout.addStretch(1)
+        self.setFocusProxy(self.link_box)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.link_box.setEnabled(enabled)
+        self.button.setEnabled(enabled)
+        self.show_info(self.HINT if enabled else "Allow internet access above to paste a link.")
+
+    def show_info(self, message: str) -> None:
+        self.status.setObjectName("hint")
+        self.status.setText(message)
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+
+    def show_error(self, message: str) -> None:
+        self.status.setObjectName("inlineWarning")
+        self.status.setText(message)
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+
+    def clear(self) -> None:
+        self.link_box.clear()
+
+    def _typed(self) -> None:
+        if self.status.objectName() == "inlineWarning":
+            self.show_info(self.HINT)
+
+    def _submit(self) -> None:
+        if self.link_box.isEnabled():
+            self.submitted.emit(self.link_box.text())
+
+
 class DownloadRow(QWidget):
     """One download: name, what it is doing, progress bar, live figures, then the validation checklist."""
+
+    actionRequested = pyqtSignal(str)  # "retry" | "proxy" | "cookies": what a failed link download offers
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("downloadRow")
-        self.title = QLabel(title)
+        self.title = ElidedLabel(title)
         self.title.setObjectName("downloadTitle")
         self.bar = QProgressBar()
         self.bar.setObjectName("downloadBar")
         self.bar.setRange(0, 1000)
         self.bar.setFixedHeight(8)
         self.bar.setTextVisible(False)
+        self.bar.setAccessibleName("Download progress")
+        self.action_button = QPushButton()
+        self.action_button.setObjectName("outline")
+        self.action_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.action_button.setVisible(False)
+        self.action_button.clicked.connect(lambda: self.actionRequested.emit(self._action))
+        self._action = ""
+        self.details_button = QPushButton("Download details")
+        self.details_button.setObjectName("sourcesButton")
+        self.details_button.setFlat(True)
+        self.details_button.setCheckable(True)
+        self.details_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.details_button.setVisible(False)
+        self.details = QLabel()
+        self.details.setObjectName("statusLabel")
+        self.details.setWordWrap(True)
+        self.details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.details.setVisible(False)
+        self.details_button.toggled.connect(self.details.setVisible)
         self.download: downloads.Download | None = None  # set while running
         self.entry: dict | None = None  # set while interrupted, awaiting restart
         self.state = QLabel("Starting…")
@@ -311,6 +447,10 @@ class DownloadRow(QWidget):
         info = QHBoxLayout()
         info.addWidget(self.state, 1)
         info.addWidget(self.speed)
+        extras = QHBoxLayout()
+        extras.addWidget(self.action_button)
+        extras.addWidget(self.details_button)
+        extras.addStretch(1)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(4)
@@ -320,6 +460,8 @@ class DownloadRow(QWidget):
         layout.addWidget(self.stats)
         layout.addWidget(self.performance)
         layout.addWidget(self.checks)
+        layout.addLayout(extras)
+        layout.addWidget(self.details)
 
     def show_message(self, message: str) -> None:
         self.state.setText(message)
@@ -337,7 +479,7 @@ class DownloadRow(QWidget):
         self.state.setStyleSheet(f"color: {presentation.tone_color(tone, dark, theme)};" if tone != "muted" else "")
         self.speed.setText(f"↓ {human_size(download.speed)}/s" if download.speed and download.state == "downloading" else "")
         stats = presentation.download_stats(download)
-        if stats:
+        if stats and download.state == "downloading":
             stats = f"{download.progress * 100:.0f}% · {stats}"  # the slim bar carries no text
         self.stats.setText(stats)
         self.stats.setVisible(bool(stats))
@@ -347,11 +489,29 @@ class DownloadRow(QWidget):
         self.performance.setVisible(bool(perf))
         checks = list(download.checks or [])
         text = presentation.checks_html(checks, dark, theme)
+        if download.kind == "link" and download.state != "rejected":
+            text = ""  # a pasted link that passed every check needs no checklist
         if download.state == "rejected" and download.message:
             text += f"<br><b>{download.message}</b>"
         self.checks.setText(text)
         self.checks.setVisible(bool(text))
         self.bar.setVisible(download.state in ("queued", "downloading", "finished", "validating"))
+        if download.kind == "link":
+            self._show_link_extras(download)
+
+    ACTION_TEXT = {"retry": "Try again", "proxy": "Set proxy…", "cookies": "Choose browser…"}
+
+    def _show_link_extras(self, download: downloads.Download) -> None:
+        self._action = download.action if download.state == "failed" else ""
+        self.action_button.setText(self.ACTION_TEXT.get(self._action, ""))
+        self.action_button.setVisible(bool(self._action))
+        lines = [attempt.line() for attempt in download.attempts]
+        self.details.setText("\n".join(lines))
+        has_details = bool(lines) and (download.state == "failed" or len(lines) > 1)
+        self.details_button.setVisible(has_details)
+        if not has_details:
+            self.details_button.setChecked(False)
+        self.title.setToolTip(download.target)
 
 
 class DownloadList(QListWidget):
@@ -372,11 +532,15 @@ class DownloadPage(QWidget):
 
     changeFolderRequested = pyqtSignal()
     mediaAdmitted = pyqtSignal(list)  # final paths of newly verified downloads
+    suggestionsReady = pyqtSignal(int, str, object)  # request id, query, list[suggest.Suggestion] (from a pool thread)
 
-    def __init__(self, client_dir=None, parent: QWidget | None = None, state_file=None, db=None) -> None:
+    def __init__(self, client_dir=None, parent: QWidget | None = None, state_file=None, db=None,
+                 settings=None) -> None:
         super().__init__(parent)
         self.setObjectName("browser")
         self.internet_allowed = False
+        self._settings = settings  # anything with setting(key) / set_setting(key, value), e.g. the Library
+        self._memory: dict[str, str] = {}
         self.selected_url: str | None = None
         self._request_id = 0
         self._worker: SearchWorker | None = None
@@ -388,6 +552,7 @@ class DownloadPage(QWidget):
         self.pipeline = acquire.Pipeline(self.history, on_admitted=self._admitted)
         self.client = downloads.DownloadClient(
             client_dir or downloads.DEFAULT_DIR, self._download_updated, state_file, pipeline=self.pipeline)
+        self.client.link_settings = lambda: (self._get(PROXY_SETTING), self._get(BROWSER_SETTING))
 
         self._download_items: dict[int, tuple[QListWidgetItem | None, DownloadRow]] = {}
         self._titles: dict[str, str] = {}  # target url -> result title, for the download row
@@ -402,13 +567,19 @@ class DownloadPage(QWidget):
         title = QLabel("Search & Download")
         title.setObjectName("pageTitle")
         header.addWidget(title)
-        header.addStretch(1)
-        self.folder_label = QLabel()
+        header.addSpacing(16)
+        self.mode = SegmentedControl("Search", "Paste Link")
+        self.mode.setAccessibleName("Download mode")
+        self.mode.setToolTip("Search for a title, or paste a link to download")
+        self.mode.toggled.connect(self._set_mode)
+        header.addWidget(self.mode)
+        self.folder_label = ElidedLabel(mode=Qt.TextElideMode.ElideMiddle)  # gives way to the title when narrow
         self.folder_label.setObjectName("statusLabel")
+        self.folder_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.folder_button = QPushButton("Change download folder")
         self.folder_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.folder_button.clicked.connect(self.changeFolderRequested)
-        header.addWidget(self.folder_label)
+        header.addWidget(self.folder_label, 1)
         header.addWidget(self.folder_button)
         self.set_download_dir(self.client.directory)
 
@@ -419,7 +590,30 @@ class DownloadPage(QWidget):
         self.search_box.setPlaceholderText("Search for a video…")
         self.search_box.setEnabled(False)
         self.search_box.returnPressed.connect(self._run_search)
+        self.search_box.textEdited.connect(self._search_typed)
         self.search_box.installEventFilter(self)
+        self._suggest_id = 0
+        self._searched = False  # a search ran since the last keystroke: no drop-down until typing resumes
+        self._typed_query = ""  # the last search as typed, for "Search instead for …"
+        self._picked: str | None = None  # a suggestion clicked in the drop-down, searched once it is in the box
+        self.suggestion_model = QStandardItemModel(self)
+        self.completer = QCompleter(self.suggestion_model, self)
+        self.completer.setCompletionMode(QCompleter.CompletionMode.UnfilteredPopupCompletion)  # the server matched
+        self.completer.setCompletionRole(TITLE_ROLE)
+        self.completer.setMaxVisibleItems(suggest.LIMIT)
+        self.completer.popup().setObjectName("suggestions")
+        self.completer.activated[str].connect(self._suggestion_picked)
+        self.search_box.setCompleter(self.completer)
+        self.suggestionsReady.connect(self._show_suggestions)
+        self.suggest_timer = QTimer(self)
+        self.suggest_timer.setSingleShot(True)
+        self.suggest_timer.setInterval(SUGGEST_DELAY_MS)
+        self.suggest_timer.timeout.connect(self._fetch_suggestions)
+        self.correction = QLabel()  # "Showing results for Breaking Bad · Search instead for brking abd"
+        self.correction.setObjectName("hint")
+        self.correction.setVisible(False)
+        self.correction.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
+        self.correction.linkActivated.connect(self._search_exactly)
 
         self.warning = QLabel(WARNING_TEXT)
         self.warning.setWordWrap(True)
@@ -453,32 +647,47 @@ class DownloadPage(QWidget):
         self.downloads_list.setToolTip("Select a download and press C to cancel it and delete the partial file")
         self.downloads_list.cancelRequested.connect(self._cancel_item)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(theme.SIDE_MARGIN, 24, theme.SIDE_MARGIN, 20)
-        layout.setSpacing(12)
-        layout.addLayout(header)
-        layout.addSpacing(6)
-        layout.addWidget(self.search_box)
-        layout.addLayout(warning_row)
+        self.link_panel = PasteLinkPanel()
+        self.link_panel.set_enabled(False)
+        self.link_panel.submitted.connect(self.start_link)
+
+        self.search_view = QWidget()
+        search_layout = QVBoxLayout(self.search_view)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(12)
+        search_layout.addWidget(self.search_box)
+        search_layout.addWidget(self.correction)
         self.spinner = DiscSpinner()
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
         status_row.addWidget(self.spinner)
         status_row.addWidget(self.status, 1)
         status_row.addWidget(self.sources_button)
-        layout.addLayout(status_row)
+        search_layout.addLayout(status_row)
         body = QHBoxLayout()
         body.setSpacing(12)
         body.addWidget(self.results, 1)
         body.addWidget(self.detail)
-        layout.addLayout(body, 1)
+        search_layout.addLayout(body, 1)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.search_view)
+        self.stack.addWidget(self.link_panel)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(theme.SIDE_MARGIN, 24, theme.SIDE_MARGIN, 20)
+        layout.setSpacing(12)
+        layout.addLayout(header)
+        layout.addSpacing(6)
+        layout.addLayout(warning_row)
+        layout.addWidget(self.stack, 1)
         layout.addWidget(self.downloads_list)
         for entry in self.client.saved():
             row = self._add_row(entry.get("name") or entry["target"][:80], "Interrupted — resumes when internet access is allowed")[1]
             row.entry = entry
-        hint = QLabel("↑/↓ move   ·   Enter or click selects   ·   D downloads the highlighted result   ·   select a download and press C to cancel it")
-        hint.setObjectName("statusLabel")
-        layout.addWidget(hint)
+        self.hint = QLabel()
+        self.hint.setObjectName("statusLabel")
+        layout.addWidget(self.hint)
+        self._set_mode(False)
 
     # -------------------------------------------------------- download folder
 
@@ -486,8 +695,7 @@ class DownloadPage(QWidget):
         """New downloads go to *directory*; ones already running keep their folder."""
         self.client.directory = Path(directory)
         text = str(self.client.directory)
-        self.folder_label.setText(self.folder_label.fontMetrics().elidedText(
-            f"Saving to {text}", Qt.TextElideMode.ElideMiddle, 420))
+        self.folder_label.setText(f"Saving to {text}")
         self.folder_label.setToolTip(text)
 
     # ------------------------------------------------------------- internet
@@ -497,9 +705,11 @@ class DownloadPage(QWidget):
         self.allow_button.setEnabled(False)
         self.allow_button.setText("Internet Access Allowed")
         self.search_box.setEnabled(True)
-        self.search_box.setFocus()
+        self.link_panel.set_enabled(True)
+        (self.link_panel if self.mode.isChecked() else self.search_box).setFocus()
         self.results.set_placeholder("Search for movies and shows", "Type a title and press Enter.")
         self.status.setText("Type a title and press Enter.")
+        suggest.warm()
         self._resume_interrupted()
 
     def _resume_interrupted(self) -> None:
@@ -519,26 +729,173 @@ class DownloadPage(QWidget):
             row.show_message("Resuming where it left off…")
 
     def focus_search(self) -> None:
-        if self.search_box.isEnabled():
+        if self.mode.isChecked() and self.link_panel.link_box.isEnabled():
+            self.link_panel.link_box.setFocus()
+        elif self.search_box.isEnabled():
             self.search_box.setFocus()
         else:
             self.allow_button.setFocus()
 
+    # ----------------------------------------------------------- paste link
+
+    def _get(self, key: str) -> str:
+        if self._settings is not None:
+            return self._settings.setting(key) or ""
+        return self._memory.get(key, "")
+
+    def _put(self, key: str, value: str) -> None:
+        if self._settings is not None:
+            self._settings.set_setting(key, value)
+        else:
+            self._memory[key] = value
+
+    def _set_mode(self, paste: bool) -> None:
+        """Search (a title, ranked results) or Paste Link (one address, yt-dlp)."""
+        self.stack.setCurrentWidget(self.link_panel if paste else self.search_view)
+        self.hint.setText(
+            "Enter or Download starts it   ·   select a download below and press C to cancel it" if paste else
+            "↑/↓ move   ·   Enter or click selects   ·   D downloads the highlighted result   ·   "
+            "select a download and press C to cancel it")
+        if self.isVisible():
+            self.focus_search()
+
+    def start_link(self, text: str, *, keep_text: bool = False) -> None:
+        """Download the pasted *text* with the local yt-dlp, unless it is not a usable link."""
+        try:
+            url = linkdl.normalize_url(text)
+        except linkdl.LinkError as error:
+            self.link_panel.show_error(str(error))
+            return
+        host = urlsplit(url).hostname or url
+        try:
+            download = self.client.start_link(
+                url, name=host.removeprefix("www."), directory=downloads.incoming_dir(self.client.directory),
+                final_dir=self.client.directory, meta={"source": "link", "title": host})
+        except downloads.DownloadError as error:
+            self.link_panel.show_error(str(error))
+            return
+        row = self._add_row(download.name)[1]
+        row.actionRequested.connect(lambda action, row=row: self._link_action(row, action))
+        self._bind_row(download, row)
+        if not keep_text:
+            self.link_panel.clear()
+        self.link_panel.show_info("Downloading in the background. You can keep using Chrysa.")
+
+    def _link_action(self, row: DownloadRow, action: str) -> None:
+        download = row.download
+        if download is None:
+            return
+        if action == "cookies":
+            browser = self._choose_browser(row.action_button)
+            if not browser:
+                return
+            self._put(BROWSER_SETTING, "" if browser == "none" else browser)
+        elif action == "proxy":
+            current = self._get(PROXY_SETTING)
+            text, ok = QInputDialog.getText(
+                self, "Proxy", "Proxy address (http://host:port or socks5://host:port).\nLeave empty to stop using one.",
+                text=current)
+            if not ok:
+                return
+            try:
+                self._put(PROXY_SETTING, linkdl.normalize_proxy(text))
+            except linkdl.LinkError as error:
+                self.link_panel.show_error(str(error))
+                return
+        item = self._item_of(row)
+        if item is not None:
+            self._download_items.pop(id(download), None)
+            self._remove_item(item)
+        self.start_link(download.target, keep_text=True)
+
+    def _choose_browser(self, anchor: QWidget) -> str:
+        """Ask which browser's sign-in yt-dlp may use (it reads the cookies itself, locally). "" = cancelled."""
+        menu = QMenu(self)
+        names = [b for b in linkdl.BROWSERS if shutil.which(b) or shutil.which(f"{b}-browser")
+                 or (b == "chrome" and shutil.which("google-chrome"))] or list(linkdl.BROWSERS)
+        picked = {}
+        for name in names:
+            menu.addAction(name.capitalize()).triggered.connect(lambda _=False, n=name: picked.update(browser=n))
+        menu.addSeparator()
+        menu.addAction("Don't use a browser").triggered.connect(lambda _=False: picked.update(browser="none"))
+        menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+        return picked.get("browser", "")
+
     # --------------------------------------------------------------- search
 
+    def _search_typed(self, text: str) -> None:
+        """The user changed the search text: ask for suggestions once they pause."""
+        self._suggest_id += 1  # whatever is in flight is now stale
+        self._searched = False
+        if self.internet_allowed and len(suggest.split(text)[0].strip()) >= 2:
+            guess = suggest.guess(suggest.split(text)[0])
+            if guess:  # earlier answers that still fit show at once; the lookup refines them
+                self._fill_suggestions(guess)
+            self.suggest_timer.start()
+        else:
+            self.suggest_timer.stop()
+            self.completer.popup().hide()
+
+    def _fetch_suggestions(self) -> None:
+        request_id, query = self._suggest_id, suggest.split(self.search_box.text())[0]
+        suggest.fetch(query, lambda found: self.suggestionsReady.emit(request_id, query, found))
+
+    def _show_suggestions(self, request_id: int, query: str, found: list) -> None:
+        if self._searched or not self.search_box.hasFocus():
+            return
+        if request_id != self._suggest_id:  # typed on since: an older answer may still fit what is typed now
+            found = suggest.guess(suggest.split(self.search_box.text())[0])
+            if not found:
+                return
+        self._fill_suggestions(found)
+
+    def _fill_suggestions(self, found: list) -> None:
+        extra = suggest.split(self.search_box.text())[1]
+        self.suggestion_model.clear()
+        for suggestion in found:
+            item = QStandardItem(suggestion.label)
+            item.setData(f"{suggestion.title} {extra}".strip(), TITLE_ROLE)  # keeps "s01", "1080p" and the like
+            self.suggestion_model.appendRow(item)
+        if found:
+            self.completer.complete()
+        else:
+            self.completer.popup().hide()
+
+    def _suggestion_picked(self, title: str) -> None:
+        # Enter in the drop-down also reaches the box as returnPressed, which searches; a click does not.
+        self._picked = title
+        QTimer.singleShot(0, self._search_picked)
+
+    def _search_picked(self) -> None:
+        if self._picked is not None:
+            self.search_box.setText(self._picked)
+            self._run_search()
+
+    def _search_exactly(self, _link: str = "") -> None:
+        """"Search instead for …": run what was typed, without correcting it."""
+        self.search_box.setText(self._typed_query)
+        self._run_search(correct=False)
+
     def eventFilter(self, obj, event) -> bool:  # Up/Down in the search box drive the result list
-        if obj is self.search_box and event.type() == QEvent.Type.KeyPress and self.results.count():
+        if (obj is self.search_box and event.type() == QEvent.Type.KeyPress and self.results.count()
+                and not self.completer.popup().isVisible()):
             if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
                 self.results.setFocus()
                 self.results.keyPressEvent(event)
                 return True
         return super().eventFilter(obj, event)
 
-    def _run_search(self) -> None:
+    def _run_search(self, correct: bool = True) -> None:
         query = self.search_box.text().strip()
+        self._picked = None
+        self._searched = True  # suggestions still on their way would cover the results
+        self.suggest_timer.stop()
+        self.completer.popup().hide()
         if not self.internet_allowed or not query:
             return
         self._request_id += 1
+        self._typed_query = query
+        self.correction.setVisible(False)
         self._progress, self._expected = {}, 0
         self.status.setText("Fetching results…")
         self.spinner.start()
@@ -550,13 +907,23 @@ class DownloadPage(QWidget):
             self.results.set_placeholder("")
         self.orb.set_style(_dark())
         self.orb.start()
-        worker = SearchWorker(self._request_id, query, self)
+        worker = SearchWorker(self._request_id, query, self, correct=correct)
+        worker.corrected.connect(self._on_corrected)
         worker.found.connect(self._on_found)
         worker.failed.connect(self._on_failed)
         worker.progressed.connect(self._on_progress)
         worker.finished.connect(worker.deleteLater)
         self._worker = worker
         worker.start()
+
+    def _on_corrected(self, request_id: int, typed: str, fixed: str) -> None:
+        if request_id != self._request_id:
+            return
+        self.search_box.setText(fixed)
+        self.correction.setText(
+            f"Showing results for <b>{html.escape(fixed)}</b>  ·  "
+            f"<a href=\"exact\">Search instead for “{html.escape(typed)}”</a>")
+        self.correction.setVisible(True)
 
     def _on_progress(self, request_id: int, event: dict) -> None:
         if request_id != self._request_id:
